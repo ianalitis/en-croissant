@@ -7,6 +7,7 @@ import { commands } from "@/bindings";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
 import { getPGN } from "@/utils/chess";
 import { saveToFile, type Tab } from "@/utils/tabs";
+import * as unwrapModule from "@/utils/unwrap";
 
 vi.mock("@mantine/notifications", () => ({
     notifications: { show: vi.fn<typeof notifications.show>() },
@@ -253,5 +254,344 @@ describe.each(["file", "temp_file"] as const)("saveToFile with %s origin", (kind
         expect(setCurrentTab).not.toHaveBeenCalled();
         expect(error).not.toHaveBeenCalled();
         expect(notifications.show).not.toHaveBeenCalled();
+    });
+});
+
+describe("destination save ordering", () => {
+    function fileTab(
+        path = "/games/ordered.pgn",
+        kind: "file" | "temp_file" = "file",
+        gameNumber = 0,
+    ): Tab {
+        return {
+            name: "Ordered",
+            value: "ordered",
+            type: "analysis",
+            gameOrigin: {
+                kind,
+                gameNumber,
+                file: {
+                    type: "file",
+                    name: path,
+                    path,
+                    numGames: 3,
+                    metadata: { tags: [], type: "game" },
+                    lastModified: 0,
+                },
+            },
+        };
+    }
+
+    // Drain the bounded promise chain without timing native completion using a timer.
+    async function flushSaves() {
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+    }
+
+    test.each(["file", "temp_file"] as const)(
+        "%s persists overlapping old/new snapshots in order instead of leaving stale disk content clean",
+        async (kind) => {
+            const firstWrite = Promise.withResolvers<void>();
+            let disk = "";
+            vi.mocked(commands.writeGame).mockImplementation(async (_path, _game, pgn) => {
+                if (pgn.includes("Unsaved analysis")) await firstWrite.promise;
+                disk = pgn;
+                return { status: "ok", data: null };
+            });
+            const options = {
+                dir: "/games",
+                tab: fileTab(undefined, kind),
+                store,
+                setCurrentTab: vi.fn(),
+            };
+            const older = saveToFile(options);
+            expect(commands.writeGame).toHaveBeenCalledTimes(1);
+            store.getState().setComment("Newer edit");
+            const newer = saveToFile(options);
+            await flushSaves();
+            expect.soft(commands.writeGame).toHaveBeenCalledTimes(1);
+            expect.soft(store.getState().dirty).toBe(true);
+            firstWrite.resolve();
+            await expect(older).resolves.toBe("changed");
+            await expect(newer).resolves.toBe("saved");
+            expect(disk).toContain("Newer edit");
+            expect(store.getState().dirty).toBe(false);
+        },
+    );
+
+    test("shares a destination queue across stores and game numbers", async () => {
+        const firstWrite = Promise.withResolvers<void>();
+        let disk: Record<number, string> = {};
+        vi.mocked(commands.writeGame).mockImplementation(async (_path, game, pgn) => {
+            const before = disk;
+            if (game === 0) await firstWrite.promise;
+            disk = { ...before, [game]: pgn };
+            return { status: "ok", data: null };
+        });
+        const secondStore = createTreeStore();
+        secondStore.getState().setComment("Second game");
+        const first = saveToFile({ dir: "/games", tab: fileTab(), store, setCurrentTab: vi.fn() });
+        const second = saveToFile({
+            dir: "/games",
+            tab: fileTab(undefined, "temp_file", 1),
+            store: secondStore,
+            setCurrentTab: vi.fn(),
+        });
+        await flushSaves();
+        expect.soft(commands.writeGame).toHaveBeenCalledTimes(1);
+        firstWrite.resolve();
+        await Promise.all([first, second]);
+        expect(disk[0]).toContain("Unsaved analysis");
+        expect(disk[1]).toContain("Second game");
+    });
+
+    test("file saves and their queue work when Promise.withResolvers is unavailable", async () => {
+        const firstWrite = Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+        vi.mocked(commands.writeGame)
+            .mockReturnValueOnce(firstWrite.promise)
+            .mockResolvedValueOnce({ status: "ok", data: null });
+        const options = { dir: "/games", tab: fileTab(), store, setCurrentTab: vi.fn() };
+        const descriptor = Object.getOwnPropertyDescriptor(Promise, "withResolvers")!;
+        const saves: Promise<unknown>[] = [];
+        Object.defineProperty(Promise, "withResolvers", { ...descriptor, value: undefined });
+        try {
+            saves.push(saveToFile(options).catch((error: unknown) => error));
+            saves.push(saveToFile(options).catch((error: unknown) => error));
+        } finally {
+            Object.defineProperty(Promise, "withResolvers", descriptor);
+        }
+        expect.soft(commands.writeGame).toHaveBeenCalledTimes(1);
+        firstWrite.resolve({ status: "ok", data: null });
+        await expect(Promise.all(saves)).resolves.toEqual(["saved", "saved"]);
+        expect(commands.writeGame).toHaveBeenCalledTimes(2);
+        expect(store.getState().dirty).toBe(false);
+    });
+
+    test("unrelated destinations run independently", async () => {
+        const firstWrite = Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+        vi.mocked(commands.writeGame)
+            .mockReturnValueOnce(firstWrite.promise)
+            .mockResolvedValueOnce({ status: "ok", data: null });
+        const first = saveToFile({ dir: "/games", tab: fileTab(), store, setCurrentTab: vi.fn() });
+        const second = saveToFile({
+            dir: "/games",
+            tab: fileTab("/games/independent.pgn"),
+            store,
+            setCurrentTab: vi.fn(),
+        });
+        expect(commands.writeGame).toHaveBeenCalledTimes(2);
+        await expect(second).resolves.toBe("saved");
+        firstWrite.resolve({ status: "ok", data: null });
+        await first;
+    });
+
+    test("finishing an earlier save retains the current tail and draining restores an immediate write", async () => {
+        const firstWrite = Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+        const secondWrite = Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+        vi.mocked(commands.writeGame)
+            .mockReturnValueOnce(firstWrite.promise)
+            .mockReturnValueOnce(secondWrite.promise)
+            .mockResolvedValue({ status: "ok", data: null });
+        const options = { dir: "/games", tab: fileTab(), store, setCurrentTab: vi.fn() };
+        const first = saveToFile(options);
+        const second = saveToFile(options);
+        firstWrite.resolve({ status: "ok", data: null });
+        await first;
+        expect.soft(commands.writeGame).toHaveBeenCalledTimes(2);
+        const third = saveToFile(options);
+        expect.soft(commands.writeGame).toHaveBeenCalledTimes(2);
+        secondWrite.resolve({ status: "ok", data: null });
+        await Promise.all([second, third]);
+        const afterDrain = saveToFile(options);
+        expect(commands.writeGame).toHaveBeenCalledTimes(4);
+        await expect(afterDrain).resolves.toBe("saved");
+    });
+
+    test.each(["native", "transport"])(
+        "%s failure releases a queued retry without changing the error identity",
+        async (failure) => {
+            const firstWrite =
+                Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+            let expectedError = new Error("Transport unavailable");
+            if (failure === "native") {
+                const unwrap = unwrapModule.unwrap;
+                vi.spyOn(unwrapModule, "unwrap").mockImplementation((result) => {
+                    try {
+                        return unwrap(result);
+                    } catch (error) {
+                        expectedError = error as Error;
+                        throw error;
+                    }
+                });
+            }
+            vi.mocked(commands.writeGame)
+                .mockReturnValueOnce(firstWrite.promise)
+                .mockResolvedValueOnce({ status: "ok", data: null });
+            const options = { dir: "/games", tab: fileTab(), store, setCurrentTab: vi.fn() };
+            const failed = saveToFile(options).catch((error: unknown) => error);
+            const retry = saveToFile(options);
+            await flushSaves();
+            expect.soft(commands.writeGame).toHaveBeenCalledTimes(1);
+            if (failure === "native") firstWrite.resolve({ status: "error", error: "Disk full" });
+            else firstWrite.reject(expectedError);
+            expect(await failed).toBe(expectedError);
+            await expect(retry).resolves.toBe("saved");
+            expect(commands.writeGame).toHaveBeenCalledTimes(2);
+            expect(store.getState().dirty).toBe(false);
+            expect(notifications.show).toHaveBeenCalledTimes(failure === "native" ? 1 : 0);
+        },
+    );
+
+    test("a queued save retains its call-start snapshot and never cleans a later edit", async () => {
+        const firstWrite = Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+        vi.mocked(commands.writeGame)
+            .mockReturnValueOnce(firstWrite.promise)
+            .mockResolvedValueOnce({ status: "ok", data: null });
+        const options = { dir: "/games", tab: fileTab(), store, setCurrentTab: vi.fn() };
+        const first = saveToFile(options);
+        store.getState().setComment("Queued snapshot");
+        const queued = saveToFile(options);
+        store.getState().setComment("Later edit");
+        firstWrite.resolve({ status: "ok", data: null });
+        await expect(first).resolves.toBe("changed");
+        await expect(queued).resolves.toBe("changed");
+        expect(vi.mocked(commands.writeGame).mock.calls[1][2]).toContain("Queued snapshot");
+        expect(vi.mocked(commands.writeGame).mock.calls[1][2]).not.toContain("Later edit");
+        expect(store.getState().dirty).toBe(true);
+    });
+
+    test.each([false, true])(
+        "queued owner invalidation skips write, copy and publication (Save As: %s)",
+        async (isUserSave) => {
+            const firstWrite =
+                Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+            vi.mocked(commands.writeGame)
+                .mockReturnValueOnce(firstWrite.promise)
+                .mockResolvedValue({ status: "ok", data: null });
+            vi.mocked(fs.copyFile).mockResolvedValue(undefined);
+            vi.mocked(save).mockResolvedValue("/games/ordered.pgn");
+            const blocker = saveToFile({
+                dir: "/games",
+                tab: fileTab(),
+                store: createTreeStore(),
+                setCurrentTab: vi.fn(),
+            });
+            let current = true;
+            const setCurrentTab = vi.fn();
+            const queued = saveToFile({
+                dir: "/games",
+                tab: fileTab(isUserSave ? "/temp/source.pgn" : undefined, "temp_file"),
+                store,
+                setCurrentTab,
+                isUserSave,
+                isCurrent: () => current,
+            });
+            await flushSaves();
+            expect.soft(commands.writeGame).toHaveBeenCalledTimes(1);
+            expect.soft(fs.copyFile).not.toHaveBeenCalled();
+            current = false;
+            firstWrite.resolve({ status: "ok", data: null });
+            await blocker;
+            await expect(queued).resolves.toBe("changed");
+            expect(commands.writeGame).toHaveBeenCalledTimes(1);
+            expect(fs.copyFile).not.toHaveBeenCalled();
+            expect(setCurrentTab).not.toHaveBeenCalled();
+            expect(store.getState().dirty).toBe(true);
+        },
+    );
+
+    test("temp Save As copy and write hold the same target gate until publication", async () => {
+        const copy = Promise.withResolvers<void>();
+        const firstWrite = Promise.withResolvers<Awaited<ReturnType<typeof commands.writeGame>>>();
+        vi.mocked(save).mockResolvedValue("/games/ordered.pgn");
+        vi.mocked(fs.copyFile).mockReturnValueOnce(copy.promise);
+        vi.mocked(commands.writeGame)
+            .mockReturnValueOnce(firstWrite.promise)
+            .mockResolvedValueOnce({ status: "ok", data: null });
+        const setCurrentTab = vi.fn();
+        const first = saveToFile({
+            dir: "/games",
+            tab: fileTab("/temp/source.pgn", "temp_file"),
+            store,
+            setCurrentTab,
+            isUserSave: true,
+        });
+        await flushSaves();
+        expect(fs.copyFile).toHaveBeenCalledExactlyOnceWith(
+            "/temp/source.pgn",
+            "/games/ordered.pgn",
+        );
+        const second = saveToFile({
+            dir: "/games",
+            tab: fileTab(),
+            store: createTreeStore(),
+            setCurrentTab: vi.fn(),
+        });
+        await flushSaves();
+        expect.soft(commands.writeGame).not.toHaveBeenCalled();
+        expect.soft(setCurrentTab).not.toHaveBeenCalled();
+        copy.resolve();
+        await flushSaves();
+        expect.soft(commands.writeGame).toHaveBeenCalledTimes(1);
+        expect.soft(setCurrentTab).not.toHaveBeenCalled();
+        firstWrite.resolve({ status: "ok", data: null });
+        await expect(first).resolves.toBe("saved");
+        await expect(second).resolves.toBe("saved");
+        expect(setCurrentTab).toHaveBeenCalledTimes(1);
+    });
+
+    test("copy failure releases a queued retry and preserves rejection identity", async () => {
+        const copy = Promise.withResolvers<void>();
+        const copyError = new Error("Copy denied");
+        vi.mocked(save).mockResolvedValue("/games/ordered.pgn");
+        vi.mocked(fs.copyFile).mockReturnValueOnce(copy.promise);
+        vi.mocked(commands.writeGame).mockResolvedValue({ status: "ok", data: null });
+        const setCurrentTab = vi.fn();
+        const first = saveToFile({
+            dir: "/games",
+            tab: fileTab("/temp/source.pgn", "temp_file"),
+            store,
+            setCurrentTab,
+            isUserSave: true,
+        }).catch((error: unknown) => error);
+        await flushSaves();
+        const retry = saveToFile({ dir: "/games", tab: fileTab(), store, setCurrentTab: vi.fn() });
+        await flushSaves();
+        expect.soft(commands.writeGame).not.toHaveBeenCalled();
+        copy.reject(copyError);
+        expect(await first).toBe(copyError);
+        await expect(retry).resolves.toBe("saved");
+        expect(setCurrentTab).not.toHaveBeenCalled();
+        expect(commands.writeGame).toHaveBeenCalledTimes(1);
+    });
+
+    test("a late Save As picker cannot overwrite a newer clean snapshot at the same destination", async () => {
+        const picker = Promise.withResolvers<string | null>();
+        vi.mocked(save)
+            .mockReturnValueOnce(picker.promise)
+            .mockResolvedValueOnce("/games/ordered.pgn");
+        vi.mocked(fs.copyFile).mockResolvedValue(undefined);
+        let disk = "";
+        vi.mocked(commands.writeGame).mockImplementation(async (_path, _game, pgn) => {
+            disk = pgn;
+            return { status: "ok", data: null };
+        });
+        const options = {
+            dir: "/games",
+            tab: fileTab("/temp/source.pgn", "temp_file"),
+            store,
+            setCurrentTab: vi.fn(),
+            isUserSave: true,
+        };
+        const older = saveToFile(options);
+        await flushSaves();
+        store.getState().setComment("Newer edit");
+        await expect(saveToFile(options)).resolves.toBe("saved");
+        picker.resolve("/games/ordered.pgn");
+        await expect(older).resolves.toBe("changed");
+        expect(disk).toContain("Newer edit");
+        expect(commands.writeGame).toHaveBeenCalledTimes(1);
+        expect(fs.copyFile).toHaveBeenCalledTimes(1);
+        expect(options.setCurrentTab).toHaveBeenCalledTimes(1);
+        expect(store.getState().dirty).toBe(false);
     });
 });

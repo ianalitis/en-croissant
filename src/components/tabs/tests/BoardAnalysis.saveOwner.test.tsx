@@ -104,3 +104,78 @@ it.each(["focus", "unmount"])(
     }
   },
 );
+
+it("BoardAnalysis serializes a pending automatic save before a newer manual save", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+  );
+  localStorage.clear();
+  sessionStorage.clear();
+  const atoms = createStore();
+  const source: Tab = {
+    name: "Source",
+    value: "source",
+    type: "analysis",
+    gameOrigin: {
+      kind: "file",
+      gameNumber: 0,
+      file: {
+        type: "file",
+        name: "ordered.pgn",
+        path: "/games/ordered.pgn",
+        numGames: 1,
+        metadata: { tags: [], type: "game" },
+        lastModified: 0,
+      },
+    },
+  };
+  atoms.set(tabsAtom, [source]);
+  atoms.set(activeTabAtom, source.value);
+  atoms.set(autoSaveAtom, true);
+  const tree = createTreeStore();
+  tree.getState().setComment("Older automatic snapshot");
+  const firstWrite = Promise.withResolvers<void>();
+  let disk = "";
+  vi.spyOn(commands, "writeGame").mockImplementation(async (_path, _game, pgn) => {
+    if (pgn.includes("Older automatic snapshot")) await firstWrite.promise;
+    disk = pgn;
+    return { status: "ok", data: null };
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <Provider store={atoms}>
+          <MantineProvider env="test">
+            <TreeStateContext.Provider value={tree}>
+              <BoardAnalysis />
+            </TreeStateContext.Provider>
+          </MantineProvider>
+        </Provider>,
+      ),
+    );
+    expect(commands.writeGame).toHaveBeenCalledTimes(1);
+    await act(async () => tree.getState().setComment("Newer manual snapshot"));
+    await act(async () => {
+      callbacks.save();
+    });
+    expect.soft(commands.writeGame).toHaveBeenCalledTimes(1);
+    expect.soft(tree.getState().dirty).toBe(true);
+    await act(async () => firstWrite.resolve());
+    expect(commands.writeGame).toHaveBeenCalledTimes(2);
+    expect(disk).toContain("Newer manual snapshot");
+    expect(tree.getState().dirty).toBe(false);
+    expect(atoms.get(tabsAtom)).toEqual([source]);
+  } finally {
+    firstWrite.resolve();
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  }
+});

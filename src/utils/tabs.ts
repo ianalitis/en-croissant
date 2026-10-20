@@ -148,6 +148,29 @@ export async function isInTempDir(filePath: string): Promise<boolean> {
     return normalize(filePath).startsWith(normalize(tmp));
 }
 
+// writeGame rewrites the whole PGN file, so different games and stores must
+// share a gate. This only coordinates saves in this JS context at this exact path.
+const fileSaveTails = new Map<string, Promise<void>>();
+
+async function withFileSave<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+    const previous = fileSaveTails.get(filePath);
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    fileSaveTails.set(filePath, tail);
+    try {
+        // No await on an idle path: preserve the immediate first write.
+        if (previous) await previous;
+        return await operation();
+    } finally {
+        // The tail only signals completion. Caller errors pass through unchanged
+        // without creating an unhandled rejected promise or blocking queued retries.
+        release();
+        if (fileSaveTails.get(filePath) === tail) fileSaveTails.delete(filePath);
+    }
+}
+
 export async function saveToFile({
     dir,
     tab,
@@ -219,16 +242,16 @@ export async function saveToFile({
             return "cancelled";
         }
         if (!isCurrent()) return "changed";
+        // Pickers can resolve out of invocation order. Do not enqueue an old
+        // snapshot after a newer save has already written and cleaned this tree.
+        const current = store.getState();
+        if (current.root !== root || current.headers !== headers) return "changed";
         if (userChoice.endsWith(".pgn")) {
             filePath = userChoice;
         } else {
             // on Linux filters for userChoice seemingly don't work
             // so userChoice can end without 'pgn' extension
             filePath = userChoice.concat(".pgn");
-        }
-
-        if (isTempFile && fileOrigin) {
-            await copyFile(fileOrigin.file.path, filePath);
         }
 
         const numGames = isTempFile && fileOrigin ? fileOrigin.file.numGames : 1;
@@ -249,7 +272,14 @@ export async function saveToFile({
             },
         };
     }
-    if (!isCurrent()) return "changed";
-    unwrap(await commands.writeGame(filePath, fileOrigin?.gameNumber ?? 0, pgn));
-    return finishSave();
+    return withFileSave(filePath, async () => {
+        // Ownership may have changed while waiting behind another save.
+        if (!isCurrent()) return "changed";
+        if (isTempFile && isUserSave && fileOrigin) {
+            await copyFile(fileOrigin.file.path, filePath);
+            if (!isCurrent()) return "changed";
+        }
+        unwrap(await commands.writeGame(filePath, fileOrigin?.gameNumber ?? 0, pgn));
+        return finishSave();
+    });
 }
