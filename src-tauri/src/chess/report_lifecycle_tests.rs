@@ -1,5 +1,5 @@
 use super::*;
-use std::{os::unix::fs::PermissionsExt, time::Duration};
+use std::{cell::Cell, future::poll_fn, os::unix::fs::PermissionsExt, task::Poll, time::Duration};
 use tauri::{
     test::{mock_builder, mock_context, noop_assets, MockRuntime},
     Listener, Manager,
@@ -10,6 +10,15 @@ const ID: &str = "report-lifecycle";
 const FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const CANCEL_DEADLINE: Duration = Duration::from_secs(1);
 const WATCHDOG: Duration = Duration::from_secs(12);
+
+thread_local! {
+    static COMPLETED_PLIES: Cell<usize> = const { Cell::new(0) };
+}
+
+// Observation only: no yield or cancellation mutation inside preprocessing.
+pub(super) fn record_completed_ply() {
+    COMPLETED_PLIES.with(|count| count.set(count.get() + 1));
+}
 
 // These calls only inspect/wait for the exact child recorded by our disposable fixture.
 // No signals, global process enumeration, or descendant processes are involved.
@@ -131,6 +140,7 @@ impl Drop for Fixture {
 }
 
 fn app() -> tauri::App<MockRuntime> {
+    COMPLETED_PLIES.with(|count| count.set(0));
     let app = mock_builder()
         .manage(AppState::default())
         .build(mock_context(noop_assets()))
@@ -422,6 +432,81 @@ async fn report_lifecycle_illegal_move_is_preserved_and_reaped() {
     );
     assert!(app.state::<AppState>().analysis_cancel_flags.is_empty());
     fixture.assert_reaped();
+}
+
+async fn cancel_during_preprocessing(moves: &[&str]) -> (Result<Vec<MoveAnalysis>, Error>, usize) {
+    let app = app();
+    let fixture = Fixture::new("success");
+    let mut options = options();
+    options.moves = moves.iter().map(|m| (*m).into()).collect();
+    let (result, ()) = timeout(WATCHDOG, async {
+        // futures_util::join! polls in argument order, keeping the report first.
+        futures_util::join!(run(&app, &fixture.path, options, vec![]), async {
+            poll_fn(|_| {
+                if COMPLETED_PLIES.with(Cell::get) >= 2 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            cancel_analysis(ID.into(), app.state()).await.unwrap();
+        })
+    })
+    .await
+    .expect("preprocessing cancellation watchdog expired");
+    assert!(app.state::<AppState>().analysis_cancel_flags.is_empty());
+    fixture.assert_reaped();
+    (result, COMPLETED_PLIES.with(Cell::get))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn report_lifecycle_preprocessing_cancel_before_illegal_tail() {
+    let (result, completed) = cancel_during_preprocessing(&["e2e4", "e7e5", "e2e5"]).await;
+    assert!(
+        matches!(result, Err(Error::AnalysisCancelled)),
+        "{result:?}"
+    );
+    assert_eq!(completed, 2, "cancellation must precede the illegal tail");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn report_lifecycle_preprocessing_cancel_before_legal_tail() {
+    let (result, completed) = cancel_during_preprocessing(&["e2e4", "e7e5", "g1f3", "b8c6"]).await;
+    assert_eq!(
+        completed, 2,
+        "cancellation must skip the remaining legal plies"
+    );
+    assert!(
+        matches!(result, Err(Error::AnalysisCancelled)),
+        "{result:?}"
+    );
+}
+
+async fn successful_two_ply_report(reversed: bool) {
+    let app = app();
+    let fixture = Fixture::new("success");
+    let mut options = options();
+    options.moves = vec!["e2e4".into(), "e7e5".into()];
+    options.reversed = reversed;
+    let result = timeout(WATCHDOG, run(&app, &fixture.path, options, vec![]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(COMPLETED_PLIES.with(Cell::get), 2);
+    assert_eq!(result.len(), 3);
+    assert!(app.state::<AppState>().analysis_cancel_flags.is_empty());
+    fixture.assert_reaped();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn report_lifecycle_preprocessing_two_ply_success() {
+    successful_two_ply_report(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn report_lifecycle_preprocessing_two_ply_reversed_success() {
+    successful_two_ply_report(true).await;
 }
 
 #[tokio::test]

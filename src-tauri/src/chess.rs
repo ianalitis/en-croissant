@@ -551,30 +551,32 @@ async fn analyze_game_inner<R: tauri::Runtime>(
         let mut chess: Chess = setup.position(castling_mode)?;
         let mut fens: Vec<(Fen, Vec<String>, bool)> = vec![(fen, vec![], false)];
 
-        options
-            .moves
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, m)| -> Result<(), Error> {
-                let uci = UciMove::from_ascii(m.as_bytes())?;
-                let m = uci.to_move(&chess)?;
-                let previous_pos = chess.clone();
-                chess.play_unchecked(&m);
-                let current_pos = chess.clone();
-                if !chess.is_game_over() {
-                    let is_sacrifice = is_material_sacrifice(
-                        &previous_pos,
-                        &current_pos,
-                        &mut EvaluationBudget::default(),
-                    );
-                    fens.push((
-                        Fen::from_position(current_pos, EnPassantMode::Legal),
-                        options.moves.clone().into_iter().take(i + 1).collect(),
-                        is_sacrifice,
-                    ));
-                }
-                Ok(())
-            })?;
+        for (i, m) in options.moves.iter().enumerate() {
+            tokio::task::yield_now().await;
+            if cancel_flag.load(Ordering::SeqCst) {
+                return Err(Error::AnalysisCancelled);
+            }
+
+            let uci = UciMove::from_ascii(m.as_bytes())?;
+            let m = uci.to_move(&chess)?;
+            let previous_pos = chess.clone();
+            chess.play_unchecked(&m);
+            let current_pos = chess.clone();
+            if !chess.is_game_over() {
+                let is_sacrifice = is_material_sacrifice(
+                    &previous_pos,
+                    &current_pos,
+                    &mut EvaluationBudget::default(),
+                );
+                fens.push((
+                    Fen::from_position(current_pos, EnPassantMode::Legal),
+                    options.moves.clone().into_iter().take(i + 1).collect(),
+                    is_sacrifice,
+                ));
+            }
+            #[cfg(all(test, unix))]
+            report_lifecycle_tests::record_completed_ply();
+        }
 
         if options.reversed {
             fens.reverse();
