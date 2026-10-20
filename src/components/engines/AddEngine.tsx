@@ -30,7 +30,6 @@ import {
 } from "@/utils/engines";
 import { usePlatform } from "@/utils/files";
 import { formatBytes } from "@/utils/format";
-import { unwrap } from "@/utils/unwrap";
 import ProgressButton from "../common/ProgressButton";
 import EngineForm from "./EngineForm";
 
@@ -206,21 +205,23 @@ function EngineCard({
   const [, setEngines] = useAtom(enginesAtom);
   const downloadEngine = useCallback(
     async (id: number, url: string) => {
-      setInProgress(true);
       const enginesDir = await getEnginesDir();
       let path = await resolve(enginesDir, `${url.slice(url.lastIndexOf("/") + 1)}`);
       if (/\.(?:zip|tar|tar\.gz)(?:[?#]|$)/.test(url)) {
         path = enginesDir;
       }
-      await commands.downloadFile(`engine_${id}`, url, path, null, null, null);
+      const download = await commands.downloadFile(`engine_${id}`, url, path, null, null, null);
+      if (download.status === "error") throw new Error(download.error);
       let enginesDirPath = enginesDir;
       if (enginesDirPath.endsWith("/") || enginesDirPath.endsWith("\\")) {
         enginesDirPath = enginesDirPath.slice(0, -1);
       }
       const enginePath = await join(enginesDirPath, ...engine.path.split("/"));
-      await commands.setFileAsExecutable(enginePath);
-      const config = unwrap(await commands.getEngineConfig(enginePath));
-      setEngines(async (prev) => [
+      const executable = await commands.setFileAsExecutable(enginePath);
+      if (executable.status === "error") throw new Error(executable.error);
+      const config = await commands.getEngineConfig(enginePath);
+      if (config.status === "error") throw new Error(config.error);
+      await setEngines(async (prev) => [
         ...(await prev),
         {
           ...engine,
@@ -228,7 +229,7 @@ function EngineCard({
           type: "local",
           path: enginePath,
           loaded: true,
-          settings: config.options
+          settings: config.data.options
             .filter((o) => requiredEngineSettings.includes(o.value.name))
             .map((o) => ({
               name: o.value.name,
@@ -267,6 +268,8 @@ function EngineCard({
           <ProgressButton
             id={`engine_${engineId}`}
             initInstalled={initInstalled}
+            waitForAction
+            disabled={!engine.downloadLink}
             labels={{
               completed: t("Common.Installed"),
               action: t("Common.Install"),
@@ -275,7 +278,7 @@ function EngineCard({
             }}
             onClick={() => {
               if (!engine.downloadLink) return;
-              downloadEngine(engineId, engine.downloadLink);
+              return downloadEngine(engineId, engine.downloadLink);
             }}
             inProgress={inProgress}
             setInProgress={setInProgress}

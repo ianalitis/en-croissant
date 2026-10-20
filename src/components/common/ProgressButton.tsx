@@ -1,13 +1,16 @@
 import { ActionIcon, Box, Button, Group, Progress } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { IconX } from "@tabler/icons-react";
-import { memo, useCallback, useEffect } from "react";
+import { error } from "@tauri-apps/plugin-log";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useProgress } from "@/hooks/useProgress";
 import classes from "./ProgressButton.module.css";
 
 type Props = {
   id: string;
   initInstalled: boolean;
-  onClick: (id: string) => void;
+  onClick: (id: string) => void | Promise<void>;
+  waitForAction?: boolean;
   onCancel?: () => void;
   leftIcon?: React.ReactNode;
   labels: {
@@ -22,6 +25,12 @@ type Props = {
   setInProgress: (inProgress: boolean) => void;
 };
 
+function reportError(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  void error(message).catch(console.error);
+  notifications.show({ title: "Error", message, color: "red", icon: <IconX /> });
+}
+
 function ProgressButton({
   id,
   initInstalled,
@@ -33,31 +42,62 @@ function ProgressButton({
   redoable,
   inProgress,
   setInProgress,
+  waitForAction = false,
 }: Props) {
   const { progress, finished, isActive, clear } = useProgress(id);
-  const completed = initInstalled || finished;
+  const [actionCompleted, setActionCompleted] = useState(false);
+  const pending = useRef(false);
+  const completed = initInstalled || (waitForAction ? actionCompleted : finished);
 
-  const showProgress = isActive || inProgress;
+  const showProgress = waitForAction ? inProgress : isActive || inProgress;
 
   useEffect(() => {
-    if (finished) {
+    if (!waitForAction && finished) {
       setInProgress(false);
     }
-  }, [finished, setInProgress]);
+  }, [finished, setInProgress, waitForAction]);
 
-  const handleCancel = useCallback(() => {
-    if (onCancel) {
-      onCancel();
+  const handleAction = useCallback(async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setInProgress(true);
+    setActionCompleted(false);
+    let failure: { cause: unknown } | undefined;
+    try {
+      await clear();
+      await onClick(id);
+      setActionCompleted(true);
+    } catch (cause) {
+      failure = { cause };
+    } finally {
+      try {
+        await clear();
+      } catch (cause) {
+        failure ??= { cause };
+      } finally {
+        pending.current = false;
+        setInProgress(false);
+      }
     }
-    clear();
-    setInProgress(false);
+    if (failure) reportError(failure.cause);
+  }, [clear, id, onClick, setInProgress]);
+
+  const handleCancel = useCallback(async () => {
+    try {
+      onCancel?.();
+      await clear();
+    } catch (cause) {
+      reportError(cause);
+    } finally {
+      setInProgress(false);
+    }
   }, [onCancel, clear, setInProgress]);
 
   let label: string;
   if (completed) {
     label = labels.completed;
   } else {
-    if (progress === 0 && !showProgress) label = labels.action;
+    if (!showProgress && (waitForAction || progress === 0)) label = labels.action;
     else if (progress === 100) label = labels.finalizing ?? labels.inProgress;
     else label = labels.inProgress;
   }
@@ -67,14 +107,15 @@ function ProgressButton({
       <Button
         fullWidth
         onClick={() => {
-          onClick(id);
+          if (waitForAction) void handleAction();
+          else onClick(id);
         }}
         disabled={showProgress || (completed && !redoable) || disabled}
         leftSection={<Box className={classes.label}>{leftIcon}</Box>}
         autoContrast
       >
         <span className={classes.label}>{label}</span>
-        {!completed && progress !== 0 && (
+        {!completed && progress !== 0 && (!waitForAction || showProgress) && (
           <Progress
             pos="absolute"
             h="100%"

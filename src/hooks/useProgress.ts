@@ -1,20 +1,28 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type ProgressItem } from "@/bindings";
 
 export function useProgress(id: string) {
     const [item, setItem] = useState<ProgressItem | null>(null);
+    const revision = useRef(0);
+    const activeId = useRef<string | null>(id);
 
     useEffect(() => {
-        commands.getProgress(id).then((result) => {
-            if (result) {
-                setItem(result);
-            }
-        });
-    }, [id]);
+        let disposed = false;
+        activeId.current = id;
+        setItem(null);
+        const snapshotRevision = ++revision.current;
+        commands
+            .getProgress(id)
+            .then((result) => {
+                if (!disposed && revision.current === snapshotRevision && result?.id === id) {
+                    setItem(result);
+                }
+            })
+            .catch(console.error);
 
-    useEffect(() => {
         const unlisten = events.progressEvent.listen(({ payload }) => {
-            if (payload.id === id) {
+            if (!disposed && payload.id === id) {
+                revision.current++;
                 setItem({
                     id: payload.id,
                     progress: payload.progress,
@@ -23,13 +31,25 @@ export function useProgress(id: string) {
             }
         });
         return () => {
-            unlisten.then((f) => f());
+            disposed = true;
+            activeId.current = null;
+            unlisten.then((f) => f()).catch(console.error);
         };
     }, [id]);
 
-    const clear = useCallback(() => {
-        commands.clearProgress(id);
-        setItem(null);
+    const clear = useCallback(async (): Promise<void> => {
+        if (activeId.current === id) {
+            revision.current++;
+            setItem(null);
+        }
+        try {
+            await commands.clearProgress(id);
+        } finally {
+            if (activeId.current === id) {
+                revision.current++;
+                setItem(null);
+            }
+        }
     }, [id]);
 
     return {
