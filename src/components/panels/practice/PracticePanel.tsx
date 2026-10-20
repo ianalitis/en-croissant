@@ -92,35 +92,8 @@ function PracticePanel() {
   const deckPositionsRef = useRef(deck.positions);
   deckPositionsRef.current = deck.positions;
   const lastSyncedTreeRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    const treeFingerprint = JSON.stringify(root);
-    if (lastSyncedTreeRef.current === treeFingerprint) return;
-
-    const orientation = headers.orientation || "white";
-    const start = headers.start || [];
-
-    if (deckPositionsRef.current.length === 0) {
-      const newDeck = buildFromTree(root, orientation, start);
-      if (newDeck.length > 0) {
-        setDeck({ positions: newDeck, logs: [] });
-      }
-    } else {
-      // Sync existing deck with tree changes
-      const { positions, added, removed } = syncDeck(
-        deckPositionsRef.current,
-        root,
-        orientation,
-        start,
-      );
-      if (added > 0 || removed > 0) {
-        setDeck((prev) => ({ ...prev, positions }));
-        setSyncMessage({ added, removed });
-        setTimeout(() => setSyncMessage(null), 5000);
-      }
-    }
-    lastSyncedTreeRef.current = treeFingerprint;
-  }, [root, headers, setDeck]);
+  const lastSyncedMetadataRef = useRef<string | null>(null);
+  const practiceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const stats = getStats(deck.positions);
 
@@ -131,6 +104,30 @@ function PracticePanel() {
   const [sessionStats, setSessionStats] = useAtom(practiceSessionStatsAtom);
   const setCardStartTime = useSetAtom(practiceCardStartTimeAtom);
   const practiceAutoDifficulty = useAtomValue(practiceAutoDifficultyAtom);
+
+  const stopPractice = useCallback(() => {
+    clearTimeout(practiceTimerRef.current);
+    setPracticeState({ phase: "idle" });
+    setPracticePath(null);
+    setInvisible(false);
+    setShowComments(true);
+    setEvalOpen(true);
+    setSessionStats({
+      mode: "anki",
+      remainingPositions: [],
+      correct: 0,
+      incorrect: 0,
+      streak: 0,
+      bestStreak: 0,
+    });
+  }, [
+    setPracticeState,
+    setPracticePath,
+    setInvisible,
+    setShowComments,
+    setEvalOpen,
+    setSessionStats,
+  ]);
 
   const newPractice = useCallback(
     (stats?: Partial<PracticeSessionStats>) => {
@@ -197,6 +194,7 @@ function PracticePanel() {
           }));
           newPractice({ remainingPositions, mode: "full" });
         }, 300);
+        practiceTimerRef.current = timer;
         return () => clearTimeout(timer);
       } else if (practiceAutoDifficulty !== "none" && practiceState.positionIndex !== undefined) {
         const positionIndex = practiceState.positionIndex;
@@ -213,6 +211,7 @@ function PracticePanel() {
           }));
           newPractice();
         }, 300);
+        practiceTimerRef.current = timer;
         return () => clearTimeout(timer);
       }
     }
@@ -227,6 +226,45 @@ function PracticePanel() {
     deck.positions,
     setDeck,
   ]);
+
+  // Run after the rating effect so Stop also cancels a timer scheduled in this commit.
+  useEffect(() => {
+    const orientation = headers.orientation || "white";
+    const start = headers.start || [];
+    const treeFingerprint = JSON.stringify([root, orientation, start]);
+    if (lastSyncedTreeRef.current === treeFingerprint) return;
+
+    const metadataFingerprint = JSON.stringify([orientation, start]);
+    if (
+      lastSyncedMetadataRef.current !== null &&
+      lastSyncedMetadataRef.current !== metadataFingerprint &&
+      practiceState.phase !== "idle"
+    ) {
+      stopPractice();
+    }
+    lastSyncedMetadataRef.current = metadataFingerprint;
+
+    if (deckPositionsRef.current.length === 0) {
+      const newDeck = buildFromTree(root, orientation, start);
+      if (newDeck.length > 0) {
+        setDeck((prev) => ({ ...prev, positions: newDeck }));
+      }
+    } else {
+      // Sync existing deck with tree changes
+      const { positions, added, removed } = syncDeck(
+        deckPositionsRef.current,
+        root,
+        orientation,
+        start,
+      );
+      if (added > 0 || removed > 0) {
+        setDeck((prev) => ({ ...prev, positions }));
+        setSyncMessage({ added, removed });
+        setTimeout(() => setSyncMessage(null), 5000);
+      }
+    }
+    lastSyncedTreeRef.current = treeFingerprint;
+  }, [root, headers, setDeck, practiceState.phase, stopPractice]);
 
   function handleQualityRating(grade: 1 | 2 | 3 | 4) {
     if (practiceState.phase !== "correct" || practiceState.positionIndex === undefined) return;
@@ -548,21 +586,7 @@ function PracticePanel() {
                           variant="light"
                           size="compact-xs"
                           color="red"
-                          onClick={() => {
-                            setPracticeState({ phase: "idle" });
-                            setPracticePath(null);
-                            setInvisible(false);
-                            setShowComments(true);
-                            setEvalOpen(true);
-                            setSessionStats({
-                              mode: "anki",
-                              remainingPositions: [],
-                              correct: 0,
-                              incorrect: 0,
-                              streak: 0,
-                              bestStreak: 0,
-                            });
-                          }}
+                          onClick={stopPractice}
                         >
                           {t("Common.Stop")}
                         </Button>
