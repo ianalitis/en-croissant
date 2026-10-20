@@ -15,10 +15,11 @@ const mocks = vi.hoisted(() => ({
   getEngineConfig: vi.fn<(path: string) => Promise<Result<EngineConfig, string>>>(),
   getProgress: vi.fn<(id: string) => Promise<ProgressItem | null>>(),
   clearProgress: vi.fn<(id: string) => Promise<void>>(),
+  listen: vi.fn<(listener: (event: { payload: ProgressItem }) => void) => Promise<() => void>>(),
   getEnginesDir: vi.fn<() => Promise<string>>(),
   resolve: vi.fn<(...paths: string[]) => Promise<string>>(),
   join: vi.fn<(...paths: string[]) => Promise<string>>(),
-  setEngines: vi.fn<(update: (prev: Engine[]) => Promise<Engine[]>) => Promise<void>>(),
+  setEngines: vi.fn<(update: (prev: Engine[]) => Engine[] | Promise<Engine[]>) => Promise<void>>(),
   notify: vi.fn(),
   log: vi.fn<(...args: unknown[]) => Promise<void>>(),
   registered: [] as Engine[],
@@ -30,10 +31,7 @@ vi.mock("@/bindings", () => ({
   commands: mocks,
   events: {
     progressEvent: {
-      listen: vi.fn(async (listener: (event: { payload: ProgressItem }) => void) => {
-        mocks.listeners.add(listener);
-        return () => mocks.listeners.delete(listener);
-      }),
+      listen: mocks.listen,
     },
   },
 }));
@@ -52,16 +50,17 @@ vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => k
 vi.mock("../EngineForm", () => ({ default: () => null }));
 
 const ok = { status: "ok", data: null } as const;
+// Tauri JSON carries numeric defaults, despite the generated Rust bigint declaration.
 const config = {
   name: "Test engine",
   options: [
     {
       type: "spin",
-      value: { name: "Threads", default: BigInt(2), min: BigInt(1), max: BigInt(32) },
+      value: { name: "Threads", default: 2, min: 1, max: 32 },
     },
     { type: "check", value: { name: "Ponder", default: false } },
   ],
-} satisfies EngineConfig;
+} as unknown as EngineConfig;
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -143,6 +142,12 @@ beforeEach(() => {
   mocks.getEngineConfig.mockResolvedValue({ status: "ok", data: config });
   mocks.getProgress.mockResolvedValue(null);
   mocks.clearProgress.mockResolvedValue(undefined);
+  mocks.listen.mockImplementation(async (listener) => {
+    mocks.listeners.add(listener);
+    return () => {
+      mocks.listeners.delete(listener);
+    };
+  });
   mocks.log.mockResolvedValue(undefined);
   mocks.getEnginesDir.mockResolvedValue("/engines/");
   mocks.resolve.mockImplementation(async (...paths) => paths.join("/"));
@@ -209,7 +214,7 @@ describe("engine installation", () => {
         version: "1",
         path: "/engines/test/engine",
         loaded: true,
-        settings: [{ name: "Threads", value: BigInt(2) }],
+        settings: [{ name: "Threads", value: 2 }],
       }),
     ]);
     expect(mocks.downloadFile).toHaveBeenLastCalledWith(
@@ -349,6 +354,65 @@ function ProgressProbe({ id = "engine_0" }: { id?: string }) {
   return <output>{JSON.stringify(progressState.item)}</output>;
 }
 describe("progress snapshot ordering", () => {
+  it("unlistens exactly once when native listen resolves after final unmount and remounts cleanly", async () => {
+    const snapshot = deferred<ProgressItem | null>();
+    const listening = deferred<void>();
+    const unlisten = vi.fn();
+    mocks.getProgress.mockReturnValueOnce(snapshot.promise);
+    mocks.listen.mockImplementationOnce(async (listener) => {
+      await listening.promise;
+      mocks.listeners.add(listener);
+      return () => {
+        unlisten();
+        mocks.listeners.delete(listener);
+      };
+    });
+    await render(<ProgressProbe />);
+    const oldListener = mocks.listen.mock.calls[0][0];
+    await act(async () => root.unmount());
+    expect(unlisten).not.toHaveBeenCalled();
+    await act(async () => {
+      snapshot.resolve({ id: "engine_0", progress: 90, finished: true });
+      listening.resolve();
+    });
+    expect(unlisten).toHaveBeenCalledTimes(1);
+    expect(mocks.listeners.size).toBe(0);
+    root = createRoot(container);
+    await render(<ProgressProbe />);
+    expect(progressState.item).toBeNull();
+    expect(mocks.listeners.size).toBe(1);
+    await act(async () =>
+      oldListener({ payload: { id: "engine_0", progress: 99, finished: true } }),
+    );
+    expect(progressState.item).toBeNull();
+    await emit(12);
+    expect(progressState.progress).toBe(12);
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+  for (const outcome of ["resolve", "reject"] as const) {
+    it(`preserves B progress when an old A clear ${outcome}s after the id changes`, async () => {
+      const clear = deferred<void>();
+      mocks.clearProgress.mockReturnValueOnce(clear.promise);
+      await render(<ProgressProbe id="A" />);
+      await emit(45, false, "A");
+      let clearing: Promise<unknown> | undefined;
+      await act(async () => {
+        clearing = progressState.clear().catch((cause: unknown) => cause);
+      });
+      expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith("A");
+      await render(<ProgressProbe id="B" />);
+      await emit(67, false, "B");
+      const failure = new Error("old clear failed");
+      await act(async () => {
+        if (outcome === "resolve") clear.resolve();
+        else clear.reject(failure);
+        await clearing;
+      });
+      expect(await clearing).toBe(outcome === "resolve" ? undefined : failure);
+      expect(progressState.item).toEqual({ id: "B", progress: 67, finished: false });
+      expect(mocks.clearProgress).toHaveBeenCalledExactlyOnceWith("A");
+    });
+  }
   it("does not restore a snapshot that resolves after clear", async () => {
     const snapshot = deferred<ProgressItem | null>();
     mocks.getProgress.mockReturnValueOnce(snapshot.promise);
@@ -402,6 +466,63 @@ describe("progress snapshot ordering", () => {
     expect(await clearing).toBe(failure);
     expect(progressState.item).toBeNull();
   });
+});
+
+function ManagedRedoableButton({ onClick }: { onClick: () => Promise<void> }) {
+  const [inProgress, setInProgress] = useState(false);
+  return (
+    <>
+      <output data-testid="busy">{String(inProgress)}</output>
+      <ProgressButton
+        id="engine_0"
+        initInstalled={false}
+        waitForAction
+        redoable
+        onClick={onClick}
+        inProgress={inProgress}
+        setInProgress={setInProgress}
+        labels={{
+          action: "Common.Install",
+          completed: "Common.Installed",
+          inProgress: "Common.Downloading",
+        }}
+      />
+    </>
+  );
+}
+describe("managed redoable cleanup", () => {
+  for (const outcome of ["resolve", "reject"] as const) {
+    it(`releases busy and the pending ref after successful action cleanup ${outcome}s`, async () => {
+      const cleanup = deferred<void>();
+      mocks.clearProgress.mockResolvedValueOnce(undefined).mockReturnValueOnce(cleanup.promise);
+      const action = vi.fn(async () => {});
+      await render(<ManagedRedoableButton onClick={action} />);
+      await clickInstall();
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(mocks.clearProgress).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-testid="busy"]')?.textContent).toBe("true");
+      expect(installButton().textContent).toBe("Common.Installed");
+      expect(installButton().disabled).toBe(true);
+      await clickInstall();
+      expect(action).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        if (outcome === "resolve") cleanup.resolve();
+        else cleanup.reject(new Error("cleanup failed"));
+      });
+      expect(container.querySelector('[data-testid="busy"]')?.textContent).toBe("false");
+      expect(installButton().textContent).toBe("Common.Installed");
+      expect(installButton().disabled).toBe(false);
+      expect(mocks.notify.mock.calls.map(([notification]) => notification.message)).toEqual(
+        outcome === "reject" ? ["cleanup failed"] : [],
+      );
+      await clickInstall();
+      expect(action).toHaveBeenCalledTimes(2);
+      expect(mocks.clearProgress).toHaveBeenCalledTimes(4);
+      expect(container.querySelector('[data-testid="busy"]')?.textContent).toBe("false");
+      expect(installButton().disabled).toBe(false);
+      expect(mocks.notify).toHaveBeenCalledTimes(outcome === "reject" ? 1 : 0);
+    });
+  }
 });
 
 function LegacyButton({ onCancel }: { onCancel?: () => void }) {

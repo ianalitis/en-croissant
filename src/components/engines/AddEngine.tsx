@@ -16,6 +16,7 @@ import {
 import { useForm } from "@mantine/form";
 import { IconAlertCircle, IconDatabase, IconTrophy } from "@tabler/icons-react";
 import { join, resolve } from "@tauri-apps/api/path";
+import { error } from "@tauri-apps/plugin-log";
 import { useAtom } from "jotai";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -221,23 +222,41 @@ function EngineCard({
       if (executable.status === "error") throw new Error(executable.error);
       const config = await commands.getEngineConfig(enginePath);
       if (config.status === "error") throw new Error(config.error);
-      await setEngines(async (prev) => [
-        ...(await prev),
-        {
-          ...engine,
-          id: crypto.randomUUID(),
-          type: "local",
-          path: enginePath,
-          loaded: true,
-          settings: config.data.options
-            .filter((o) => requiredEngineSettings.includes(o.value.name))
-            .map((o) => ({
-              name: o.value.name,
-              // @ts-expect-error
-              value: o.value.default,
-            })),
-        },
-      ]);
+      const attemptedId = crypto.randomUUID();
+      try {
+        await setEngines(async (prev) => [
+          ...(await prev),
+          {
+            ...engine,
+            id: attemptedId,
+            type: "local",
+            path: enginePath,
+            loaded: true,
+            settings: config.data.options
+              .filter((o) => requiredEngineSettings.includes(o.value.name))
+              .map((o) => ({
+                name: o.value.name,
+                // @ts-expect-error
+                value: o.value.default,
+              })),
+          },
+        ]);
+      } catch (cause) {
+        try {
+          // Jotai updates memory before persistence. Repair only this attempt, best effort.
+          // Keep resolved-array updates synchronous so simultaneous rollbacks see each other.
+          await setEngines((prev) =>
+            Array.isArray(prev)
+              ? prev.filter((e) => e.id !== attemptedId)
+              : prev.then((engines) => engines.filter((e) => e.id !== attemptedId)),
+          );
+        } catch (compensationError) {
+          void error(`Failed to persist engine registration rollback: ${compensationError}`).catch(
+            console.error,
+          );
+        }
+        throw cause;
+      }
     },
     [engine, setEngines],
   );
@@ -267,7 +286,7 @@ function EngineCard({
           </Group>
           <ProgressButton
             id={`engine_${engineId}`}
-            initInstalled={initInstalled}
+            initInstalled={initInstalled && !inProgress}
             waitForAction
             disabled={!engine.downloadLink}
             labels={{
