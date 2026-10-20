@@ -148,7 +148,7 @@ fn main() {
             export_to_pgn,
             authenticate,
             write_game,
-            download_file,
+            download_file::<tauri::Wry>,
             get_tournaments,
             get_db_info,
             get_games,

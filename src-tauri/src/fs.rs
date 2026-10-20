@@ -18,13 +18,16 @@ use crate::error::Error;
 use crate::progress::update_progress;
 use crate::AppState;
 
+#[cfg(test)]
+mod tests;
+
 #[tauri::command]
 #[specta::specta]
-pub async fn download_file(
+pub async fn download_file<R: tauri::Runtime>(
     id: String,
     url: String,
     path: PathBuf,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
     state: tauri::State<'_, AppState>,
     token: Option<String>,
     finalize: Option<bool>,
@@ -41,7 +44,7 @@ pub async fn download_file(
         header_map.insert("Authorization", format!("Bearer {token}").parse().unwrap());
         req = req.headers(header_map);
     }
-    let res = req.send().await?;
+    let res = req.send().await?.error_for_status()?;
     let total_size = if let Some(total_size) = total_size {
         Some(total_size as u64)
     } else {
