@@ -39,6 +39,9 @@ use crate::{
 #[cfg(test)]
 mod evaluation_terminal_tests;
 
+#[cfg(test)]
+mod evaluation_qsearch_tests;
+
 #[cfg(all(test, unix))]
 mod report_lifecycle_tests;
 
@@ -559,12 +562,15 @@ async fn analyze_game_inner<R: tauri::Runtime>(
                 chess.play_unchecked(&m);
                 let current_pos = chess.clone();
                 if !chess.is_game_over() {
-                    let prev_eval = naive_eval(&previous_pos);
-                    let cur_eval = -naive_eval(&current_pos);
+                    let is_sacrifice = is_material_sacrifice(
+                        &previous_pos,
+                        &current_pos,
+                        &mut EvaluationBudget::default(),
+                    );
                     fens.push((
                         Fen::from_position(current_pos, EnPassantMode::Legal),
                         options.moves.clone().into_iter().take(i + 1).collect(),
-                        prev_eval > cur_eval + 100,
+                        is_sacrifice,
                     ));
                 }
                 Ok(())
@@ -745,49 +751,144 @@ fn piece_value(role: Role) -> i32 {
     }
 }
 
-fn qsearch(position: &Chess, mut alpha: i32, beta: i32) -> i32 {
-    let stand_pat = count_material(position);
+// Operational bounds, not chess draw rules. One budget covers every root sibling
+// and both evaluations used for a sacrifice decision. A terminal position is
+// resolved even at a limit, but no nonterminal node expands after exhaustion.
+// Terminal-first boundary probes can exceed the node allowance, without adding
+// descendants. The ply limit also bounds the pending sibling lists on the stack.
+// Initial 10k/64 policy completes the existing fixtures while limiting synchronous
+// report work. Neither limit is evidence of a draw or a correct full chess score.
+const EVALUATION_NODE_LIMIT: usize = 10_000;
+const EVALUATION_PLY_LIMIT: usize = 64;
 
-    if stand_pat >= beta {
-        return beta;
-    }
-    if alpha < stand_pat {
-        alpha = stand_pat;
-    }
-    let legal_moves = position.legal_moves();
-    let mut captures: Vec<_> = legal_moves.iter().filter(|m| m.is_capture()).collect();
-
-    captures.sort_by(|a, b| {
-        let a_value = piece_value(a.capture().unwrap());
-        let b_value = piece_value(b.capture().unwrap());
-        b_value.cmp(&a_value)
-    });
-
-    for capture in captures {
-        let mut new_position = position.clone();
-        new_position.play_unchecked(capture);
-        let score = -qsearch(&new_position, -beta, -alpha);
-        if score >= beta {
-            return beta;
-        }
-        if score > alpha {
-            alpha = score;
-        }
-    }
-
-    alpha
+struct EvaluationBudget {
+    remaining_nodes: usize,
+    max_ply: usize,
+    #[cfg(test)]
+    visited_nodes: usize,
+    #[cfg(test)]
+    deepest_ply: usize,
 }
 
-fn naive_eval(pos: &Chess) -> i32 {
-    pos.legal_moves()
+impl EvaluationBudget {
+    fn new(nodes: usize, max_ply: usize) -> Self {
+        Self {
+            remaining_nodes: nodes,
+            max_ply,
+            #[cfg(test)]
+            visited_nodes: 0,
+            #[cfg(test)]
+            deepest_ply: 0,
+        }
+    }
+
+    fn visit(&mut self, ply: usize) -> bool {
+        #[cfg(test)]
+        {
+            self.visited_nodes += 1;
+            self.deepest_ply = self.deepest_ply.max(ply);
+        }
+        let available = self.remaining_nodes > 0 && ply < self.max_ply;
+        self.remaining_nodes = self.remaining_nodes.saturating_sub(1);
+        available
+    }
+}
+
+impl Default for EvaluationBudget {
+    fn default() -> Self {
+        Self::new(EVALUATION_NODE_LIMIT, EVALUATION_PLY_LIMIT)
+    }
+}
+
+// None means the operational budget was exhausted, never a guessed score.
+// Scores are fail-hard bounds for this restricted search, not full chess values.
+fn qsearch_complete(
+    position: &Chess,
+    mut alpha: i32,
+    beta: i32,
+    budget: &mut EvaluationBudget,
+    ply: usize,
+) -> Option<i32> {
+    // Normalize MIN before any negation, including recursive child windows.
+    alpha = alpha.max(-i32::MAX);
+    let beta = beta.max(-i32::MAX);
+    debug_assert!(alpha <= beta);
+    let legal_moves = position.legal_moves();
+    let checked = position.is_check();
+    let available = budget.visit(ply);
+    if legal_moves.is_empty() {
+        return Some((if checked { -10000 } else { 0 }).clamp(alpha, beta));
+    }
+    if !available {
+        return None;
+    }
+
+    if !checked {
+        let stand_pat = count_material(position);
+        if stand_pat >= beta {
+            return Some(beta);
+        }
+        alpha = alpha.max(stand_pat);
+    }
+    // Quiet moves are included only when they evade check. Captures retain the
+    // existing descending victim-value ordering, with quiet evasions last.
+    let mut moves: Vec<_> = legal_moves
         .iter()
-        .map(|mv| {
-            let mut new_position = pos.clone();
-            new_position.play_unchecked(mv);
-            -qsearch(&new_position, i32::MIN, i32::MAX)
-        })
-        .max()
-        .unwrap_or_else(|| count_material(pos))
+        .filter(|mv| checked || mv.is_capture())
+        .collect();
+    moves.sort_by_key(|mv| -mv.capture().map(piece_value).unwrap_or(0));
+
+    for mv in moves {
+        let mut child = position.clone();
+        child.play_unchecked(mv);
+        let score = -qsearch_complete(&child, -beta, -alpha, budget, ply + 1)?;
+        if score >= beta {
+            return Some(beta);
+        }
+        alpha = alpha.max(score);
+    }
+    Some(alpha)
+}
+
+fn naive_eval_complete(pos: &Chess, budget: &mut EvaluationBudget) -> Option<i32> {
+    let moves = pos.legal_moves();
+    let available = budget.visit(0);
+    if moves.is_empty() {
+        return Some(if pos.is_check() { -10000 } else { 0 });
+    }
+    if !available {
+        return None;
+    }
+    let mut best = -i32::MAX;
+    for mv in &moves {
+        let mut child = pos.clone();
+        child.play_unchecked(mv);
+        best = best.max(-qsearch_complete(&child, -i32::MAX, i32::MAX, budget, 1)?);
+    }
+    Some(best)
+}
+
+fn is_material_sacrifice(previous: &Chess, current: &Chess, budget: &mut EvaluationBudget) -> bool {
+    let Some(previous_eval) = naive_eval_complete(previous, budget) else {
+        return false;
+    };
+    let Some(current_eval) = naive_eval_complete(current, budget) else {
+        return false;
+    };
+    // Equivalent to previous_eval > -current_eval + 100, without overflow.
+    i64::from(previous_eval) + i64::from(current_eval) > 100
+}
+
+// Keep the original numerical regression assertions on the production algorithm.
+#[cfg(test)]
+fn qsearch(position: &Chess, alpha: i32, beta: i32) -> i32 {
+    qsearch_complete(position, alpha, beta, &mut EvaluationBudget::default(), 0)
+        .expect("qsearch evaluation incomplete")
+}
+
+#[cfg(test)]
+fn naive_eval(pos: &Chess) -> i32 {
+    naive_eval_complete(pos, &mut EvaluationBudget::default()).expect("root evaluation incomplete")
 }
 
 #[cfg(test)]
