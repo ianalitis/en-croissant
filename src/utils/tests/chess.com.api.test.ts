@@ -5,12 +5,14 @@ const mocks = vi.hoisted(() => ({
     writeTextFile: vi.fn(),
     resolve: vi.fn(async (...parts: string[]) => parts.join("/")),
     emit: vi.fn(),
+    error: vi.fn(),
+    notify: vi.fn(),
 }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: mocks.fetch }));
 vi.mock("@tauri-apps/plugin-fs", () => ({ writeTextFile: mocks.writeTextFile }));
 vi.mock("@tauri-apps/api/path", () => ({ resolve: mocks.resolve }));
-vi.mock("@tauri-apps/plugin-log", () => ({ error: vi.fn(), info: vi.fn() }));
-vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
+vi.mock("@tauri-apps/plugin-log", () => ({ error: mocks.error, info: vi.fn() }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.notify } }));
 vi.mock("@/bindings", () => ({ events: { progressEvent: { emit: mocks.emit } } }));
 vi.mock("@/utils/http", () => ({ apiHeaders: () => ({}) }));
 vi.mock("../directories", () => ({ getDatabasesDir: async () => "/db" }));
@@ -93,4 +95,92 @@ describe("downloadChessCom writes", () => {
             .mockRejectedValueOnce(new Error("append failed"));
         await expect(downloadChessCom("player", null)).rejects.toThrow("append failed");
     });
+});
+
+describe.each([0, 1])("downloadChessCom malformed archive at index %i", (failedIndex) => {
+    it.each([
+        { status: 429, data: { code: 429, message: "Too many requests" } },
+        { status: 200, data: { games: [{ pgn: "incomplete game" }] } },
+    ])(
+        "rejects HTTP $status data, stops downloading, and permits a clean retry",
+        async ({ status, data }) => {
+            const monthlyArchives = [...archives.archives, "https://chess.com/2024/03"];
+            const failedArchive = monthlyArchives[failedIndex];
+            const pgn = "1. e4 e5 *";
+            const validGames = {
+                games: [
+                    {
+                        url: "https://www.chess.com/game/live/1",
+                        pgn,
+                        time_control: "300",
+                        end_time: 1704067200,
+                        rated: true,
+                        initial_setup: "startpos",
+                        fen: "startpos",
+                        rules: "chess",
+                        white: { rating: 1500, result: "draw", username: "player" },
+                        black: { rating: 1500, result: "draw", username: "opponent" },
+                    },
+                ],
+            };
+            let stagedPgn = "previous download";
+            mocks.writeTextFile.mockImplementation(async (_file, content, options) => {
+                stagedPgn = options.append ? stagedPgn + content : content;
+            });
+            mocks.fetch.mockResolvedValueOnce(response({ archives: monthlyArchives }));
+            for (let index = 0; index < failedIndex; index++) {
+                mocks.fetch.mockResolvedValueOnce(response(validGames));
+            }
+            mocks.fetch.mockResolvedValueOnce({
+                ...response(data),
+                ok: status === 200,
+                status,
+                url: failedArchive,
+            });
+
+            await expect(downloadChessCom("player", null)).rejects.toThrow(
+                `Invalid Chess.com games response for ${failedArchive}`,
+            );
+            expect(mocks.fetch).toHaveBeenCalledTimes(failedIndex + 2);
+            expect(mocks.fetch).toHaveBeenLastCalledWith(failedArchive, {
+                headers: {},
+                method: "GET",
+            });
+            expect(mocks.writeTextFile).toHaveBeenCalledTimes(failedIndex + 1);
+            expect(stagedPgn).toBe(pgn.repeat(failedIndex));
+            expect(mocks.emit).toHaveBeenCalledTimes(failedIndex);
+            expect(mocks.emit).not.toHaveBeenCalledWith(expect.objectContaining({ progress: 100 }));
+            expect(mocks.error).toHaveBeenCalledExactlyOnceWith(
+                `Failed to fetch Chess.com games: ${status} ${failedArchive}`,
+            );
+            expect(mocks.notify).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    title: "Failed to fetch Chess.com games",
+                    message: `Could not find games for "player" on chess.com for ${failedArchive}`,
+                    color: "red",
+                }),
+            );
+
+            mocks.fetch.mockResolvedValueOnce(response({ archives: monthlyArchives }));
+            for (const _archive of monthlyArchives) {
+                mocks.fetch.mockResolvedValueOnce(response(validGames));
+            }
+            await expect(downloadChessCom("player", null)).resolves.toBeUndefined();
+            expect(mocks.writeTextFile).toHaveBeenNthCalledWith(
+                failedIndex + 2,
+                "/db/player_chesscom.pgn",
+                "",
+                { append: false },
+            );
+            expect(mocks.fetch).toHaveBeenCalledTimes(failedIndex + 6);
+            expect(mocks.writeTextFile).toHaveBeenCalledTimes(failedIndex + 5);
+            expect(stagedPgn).toBe(pgn.repeat(monthlyArchives.length));
+            expect(mocks.emit).toHaveBeenLastCalledWith({
+                finished: false,
+                id: "chesscom_player",
+                progress: 100,
+            });
+            expect(mocks.notify).toHaveBeenCalledTimes(1);
+        },
+    );
 });

@@ -130,7 +130,7 @@ export async function downloadChessCom(player: string, timestamp: number | null)
         color: "red",
         icon: <IconX />,
       });
-      return;
+      throw new Error(`Invalid Chess.com games response for ${archive}`);
     }
 
     await writeTextFile(file, games.data.games.map((g) => g.pgn).join("\n"), {
