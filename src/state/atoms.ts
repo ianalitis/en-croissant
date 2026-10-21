@@ -150,11 +150,28 @@ const enginesFileStorage: AsyncStringStorage = {
     },
 };
 
+const enginesSchema = zodArray(engineSchema).transform((engines) => {
+    // Keep every record and the first occurrence of each existing identity.
+    // Reserve later IDs too, so a replacement cannot steal an unchanged ID.
+    const reserved = new Set(engines.map((engine) => engine.id));
+    const seen = new Set<string>();
+    return engines.map((engine) => {
+        if (!seen.has(engine.id)) {
+            seen.add(engine.id);
+            return engine;
+        }
+        let id = crypto.randomUUID();
+        while (reserved.has(id)) id = crypto.randomUUID();
+        reserved.add(id);
+        return { ...engine, id };
+    });
+});
+
 export const enginesAtom = unwrap(
     atomWithStorage<Engine[]>(
         "engines/engines.json",
         [],
-        createAsyncZodStorage(zodArray(engineSchema), enginesFileStorage) as AsyncStorage<Engine[]>,
+        createAsyncZodStorage(enginesSchema, enginesFileStorage) as AsyncStorage<Engine[]>,
     ),
 );
 

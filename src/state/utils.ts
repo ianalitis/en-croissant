@@ -73,7 +73,17 @@ export function createAsyncZodStorage<Input, Output>(
                 const res = schema.safeParse(rawValue);
                 if (res.success) {
                     if (!equal(rawValue, res.data)) {
-                        await this.setItem(key, res.data);
+                        try {
+                            await this.setItem(key, res.data);
+                        } catch (error) {
+                            // Failed normalization must not discard valid hydrated records.
+                            // Ordinary setItem calls still propagate persistence failures.
+                            try {
+                                await warn(`Error persisting normalized ${key}: ${error}`);
+                            } catch (logError) {
+                                console.error(logError);
+                            }
+                        }
                     }
                     return res.data;
                 }

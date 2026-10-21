@@ -134,7 +134,8 @@ function AddEngine({
             submitLabel={t("Common.Add")}
             form={form}
             onSubmit={(values: LocalEngine) => {
-              setEngines(async (prev) => [...(await prev), values]);
+              const engine = { ...values, id: crypto.randomUUID() };
+              setEngines(async (prev) => [...(await prev), engine]);
               setOpened(false);
             }}
           />
