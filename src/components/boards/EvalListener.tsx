@@ -53,11 +53,12 @@ function EvalListener() {
   }
 
   const isGameOver = pos?.isEnd() ?? false;
+  const effectiveThreat = threat && !(pos?.isCheck() ?? false);
   const finalFen = useMemo(() => (pos ? makeFen(pos.toSetup()) : null), [pos]);
 
   const { searchingFen, searchingMoves } = useMemo(
     () =>
-      match(threat as boolean)
+      match(effectiveThreat as boolean)
         .with(true, () => ({
           searchingFen: swapMove(finalFen || INITIAL_FEN),
           searchingMoves: [],
@@ -67,7 +68,7 @@ function EvalListener() {
           searchingMoves: moves,
         }))
         .exhaustive(),
-    [fen, moves, threat, finalFen],
+    [fen, moves, effectiveThreat, finalFen],
   );
 
   const firstEngineWithLines = useAtomValue(
@@ -90,7 +91,7 @@ function EvalListener() {
         searchingMoves={searchingMoves}
         fen={fen}
         moves={moves}
-        threat={threat}
+        threat={effectiveThreat}
       />
     ));
 }
@@ -173,8 +174,13 @@ function EngineListener({
     isGameOver,
     searchingFen,
     JSON.stringify(searchingMoves),
+    threat,
+    fen,
+    JSON.stringify(moves),
+    finalFen,
     engine.id,
     setEngineVariation,
+    setProgress,
     firstEngineWithLines,
   ]);
 
