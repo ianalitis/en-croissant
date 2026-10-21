@@ -344,9 +344,36 @@ test("should handle setFen", () => {
         root: {
             ...defaultTree().root,
             fen: "rnbq1bnr/ppppkppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR w - - 2 3",
+            halfMoves: 4,
         },
     });
 });
+
+test.each(["makeMove", "makeMoves"] as const)(
+    "%s continues absolute ply after setFen without changing FEN clocks",
+    (method) => {
+        const fen = "8/5k2/7p/3p4/3P4/7P/4K3/8 b - - 7 23";
+        store.setState(treeE4D5());
+        store.getState().setFen(fen);
+        expect.soft(store.getState().root.halfMoves).toBe(45);
+        expect(store.getState().position).toEqual([]);
+        expect(store.getState().root.children).toEqual([]);
+        if (method === "makeMove") {
+            store.getState().makeMove({ payload: "Kg6" });
+            store.getState().makeMove({ payload: "Kf3" });
+        } else {
+            store.getState().makeMoves({ payload: ["Kg6", "Kf3"] });
+        }
+        const { root, position, dirty } = store.getState();
+        expect(root.fen).toBe(fen);
+        expect.soft(root.children[0].halfMoves).toBe(46);
+        expect(root.children[0].fen).toBe("8/8/6kp/3p4/3P4/7P/4K3/8 w - - 8 24");
+        expect.soft(store.getState().currentNode().halfMoves).toBe(47);
+        expect(store.getState().currentNode().fen).toBe("8/8/6kp/3p4/3P4/5K1P/8/8 b - - 9 24");
+        expect(position).toEqual([0, 0]);
+        expect(dirty).toBe(true);
+    },
+);
 
 test("should handle setScore", () => {
     store.setState({ ...treeE4D5(), position: [0] });

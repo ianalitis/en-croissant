@@ -5,7 +5,7 @@ import { error } from "@tauri-apps/plugin-log";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { commands } from "@/bindings";
 import { createTreeStore, type TreeStore } from "@/state/store/tree";
-import { getPGN } from "@/utils/chess";
+import { getPGN, parsePGN } from "@/utils/chess";
 import { saveToFile, type Tab } from "@/utils/tabs";
 import * as unwrapModule from "@/utils/unwrap";
 
@@ -143,6 +143,85 @@ afterEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
 });
+
+test.each(["file", "database"] as const)(
+    "%s save sends literal FEN move numbers and annotations to the native boundary",
+    async (kind) => {
+        const fen = "8/5k2/7p/3p4/3P4/7P/4K3/8 b - - 7 23";
+        // Explicit native lexer output, not a native lexer or filesystem roundtrip.
+        vi.spyOn(commands, "lexPgn").mockResolvedValueOnce({
+            status: "ok",
+            data: [
+                { type: "Header", value: { tag: "SetUp", value: "1" } },
+                { type: "Header", value: { tag: "FEN", value: fen } },
+                { type: "Header", value: { tag: "White", value: "White" } },
+                { type: "Header", value: { tag: "Black", value: "Black" } },
+                { type: "Comment", value: "Find king activity [%cal Gf7g6]" },
+                { type: "San", value: "Kg6" },
+                { type: "Nag", value: "$1" },
+                { type: "Comment", value: "Centralize." },
+                { type: "ParenOpen" },
+                { type: "San", value: "Ke6" },
+                { type: "Comment", value: "Alternative." },
+                { type: "San", value: "Kf3" },
+                { type: "ParenClose" },
+                { type: "San", value: "Kf3" },
+                { type: "Outcome", value: "*" },
+            ],
+        });
+        store.getState().setState(
+            await parsePGN(`[SetUp "1"]\n[FEN "${fen}"]
+[White "White"]\n[Black "Black"]
+{Find king activity [%cal Gf7g6]} 23... Kg6 $1 {Centralize.}
+(23... Ke6 {Alternative.} 24. Kf3) 24. Kf3 *`),
+        );
+        store.setState({ dirty: true });
+        const tab: Tab = {
+            name: "FEN analysis",
+            value: "fen-numbering",
+            type: "analysis",
+            gameOrigin:
+                kind === "database"
+                    ? { kind, database: "/games/fen.db3", gameId: 7 }
+                    : {
+                          kind,
+                          gameNumber: 2,
+                          file: {
+                              type: "file",
+                              name: "fen.pgn",
+                              path: "/games/fen.pgn",
+                              numGames: 3,
+                              metadata: { tags: [], type: "game" },
+                              lastModified: 0,
+                          },
+                      },
+        };
+        const write = kind === "database" ? commands.writeDbGame : commands.writeGame;
+        vi.mocked(write).mockResolvedValueOnce({ status: "ok", data: null });
+        const setCurrentTab = vi.fn<Parameters<typeof saveToFile>[0]["setCurrentTab"]>();
+        await expect(saveToFile({ dir: "/games", tab, store, setCurrentTab })).resolves.toBe(
+            "saved",
+        );
+        expect(write).toHaveBeenCalledExactlyOnceWith(
+            kind === "database" ? "/games/fen.db3" : "/games/fen.pgn",
+            kind === "database" ? 7 : 2,
+            expect.any(String),
+        );
+        const payload = vi.mocked(write).mock.calls[0][2];
+        expect(payload).toContain('[SetUp "1"]');
+        expect(payload).toContain(`[FEN "${fen}"]`);
+        expect(payload).toContain('[White "White"]');
+        expect(payload).toContain('[Black "Black"]');
+        expect(payload).toContain("[%cal Gf7g6]Find king activity");
+        expect.soft(payload).toContain("23... Kg6! {Centralize.}");
+        expect.soft(payload).toMatch(/\(23\.\.\. Ke6 \{Alternative\.\}\s+24\. Kf3\)/);
+        expect.soft(payload).toMatch(/\)\s+24\. Kf3 \*\s*$/);
+        expect(store.getState().root.fen).toBe(fen);
+        expect(store.getState().dirty).toBe(false);
+        expect(setCurrentTab).not.toHaveBeenCalled();
+        expect(save).not.toHaveBeenCalled();
+    },
+);
 
 describe.each(["file", "temp_file"] as const)("saveToFile with %s origin", (kind) => {
     const tab: Tab = {

@@ -494,7 +494,7 @@ export async function parsePGN(pgn: string, initialFen?: string): Promise<TreeSt
     const tree = innerParsePGN(
         tokens,
         initialFen?.trim() || headers.fen.trim(),
-        pos?.turn === "black" ? 1 : 0,
+        pos ? 2 * (pos.fullmoves - 1) + (pos.turn === "black" ? 1 : 0) : 0,
     );
     tree.headers = headers;
     tree.position = headers.start ?? [];

@@ -20,6 +20,7 @@ export interface TreeNode {
     children: TreeNode[];
     score: Score | null;
     depth: number | null;
+    // Absolute chess ply at this position, not tree depth or the FEN halfmove clock.
     halfMoves: number;
     shapes: DrawShape[];
     annotations: Annotation[];
@@ -87,7 +88,7 @@ export function defaultTree(fen?: string): TreeState {
             children: [],
             score: null,
             depth: null,
-            halfMoves: pos?.turn === "black" ? 1 : 0,
+            halfMoves: pos ? 2 * (pos.fullmoves - 1) + (pos.turn === "black" ? 1 : 0) : 0,
             shapes: [],
             annotations: [],
             comment: "",
