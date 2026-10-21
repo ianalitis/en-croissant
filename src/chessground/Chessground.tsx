@@ -3,7 +3,7 @@ import type { Api } from "@lichess-org/chessground/api";
 import type { Config } from "@lichess-org/chessground/config";
 import { Box } from "@mantine/core";
 import { useAtomValue } from "jotai";
-import { type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { type Ref, useEffect, useImperativeHandle, useRef } from "react";
 import { boardImageAtom, is3dAtom, moveMethodAtom } from "@/state/atoms";
 
 const BOARD_COORDINATE_COLORS: Record<string, { white: string; black: string }> = {
@@ -60,7 +60,7 @@ interface ChessgroundProps extends Config {
 }
 
 export function Chessground({ ref, ...props }: ChessgroundProps) {
-  const [api, setApi] = useState<Api | null>(null);
+  const apiRef = useRef<Api | null>(null);
 
   const boardRef = useRef<HTMLDivElement>(null);
 
@@ -70,54 +70,16 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
   useImperativeHandle(
     ref,
     () => ({
-      playPremove: () => api?.playPremove() ?? false,
-      cancelPremove: () => api?.cancelPremove(),
+      playPremove: () => apiRef.current?.playPremove() ?? false,
+      cancelPremove: () => apiRef.current?.cancelPremove(),
     }),
-    [api],
+    [],
   );
 
   useEffect(() => {
-    if (boardRef?.current == null) return;
-    if (api) {
-      api.set({
-        ...props,
-        events: {
-          ...props.events,
-          change: () => {
-            if (props.setBoardFen && api) {
-              props.setBoardFen(api.getFen());
-            }
-          },
-        },
-      });
-    } else {
-      const chessgroundApi = NativeChessground(boardRef.current, {
-        ...props,
-        addDimensionsCssVarsTo: boardRef.current,
-        events: {
-          ...props.events,
-          change: () => {
-            if (props.setBoardFen && chessgroundApi) {
-              props.setBoardFen(chessgroundApi.getFen());
-            }
-          },
-        },
-        draggable: {
-          ...props.draggable,
-          enabled: moveMethod !== "select",
-        },
-        selectable: {
-          ...props.selectable,
-          enabled: moveMethod !== "drag",
-        },
-        addPieceZIndex: is3d,
-      });
-      setApi(chessgroundApi);
-    }
-  }, [api, props, boardRef]);
-
-  useEffect(() => {
-    api?.set({
+    if (boardRef.current == null) return;
+    let api = apiRef.current;
+    const config: Config = {
       ...props,
       events: {
         ...props.events,
@@ -136,8 +98,26 @@ export function Chessground({ ref, ...props }: ChessgroundProps) {
         enabled: moveMethod !== "drag",
       },
       addPieceZIndex: is3d,
-    });
-  }, [api, props, moveMethod, is3d]);
+    };
+    if (api) {
+      api.set(config);
+    } else {
+      api = NativeChessground(boardRef.current, {
+        ...config,
+        addDimensionsCssVarsTo: boardRef.current,
+      });
+      apiRef.current = api;
+    }
+  }, [props, moveMethod, is3d]);
+
+  // Capture the instance created above, without tying its lifetime to prop updates.
+  useEffect(() => {
+    const api = apiRef.current;
+    return () => {
+      api?.destroy();
+      apiRef.current = null;
+    };
+  }, []);
 
   const boardImage = useAtomValue(boardImageAtom);
   const boardCoordColors = getBoardCoordinateColors(boardImage);
