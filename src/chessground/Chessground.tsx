@@ -34,6 +34,7 @@ const BOARD_COORDINATE_COLORS: Record<string, { white: string; black: string }> 
   ic: { white: "#ececec", black: "#c1c18e" },
   horsey: { white: "#f0d9b5", black: "#946f51" },
   gray: { white: "#e9ecef", black: "#868e96" },
+  "workers-club": { white: "#E8DFCB", black: "#202321" },
 };
 
 function getBoardCoordinateColors(boardImage: string): {

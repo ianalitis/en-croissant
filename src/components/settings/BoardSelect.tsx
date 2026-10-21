@@ -41,6 +41,7 @@ const boardImages2d: string[] = [
   "ic.png",
   "horsey.jpg",
   "gray.svg",
+  "workers-club.svg",
 ];
 
 const boardImages3d = [

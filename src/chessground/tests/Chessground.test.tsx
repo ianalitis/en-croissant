@@ -257,6 +257,33 @@ it.each([
   },
 );
 
+it("applies workers-club to the live native board in both orientations without recreating it", async () => {
+  await render();
+  const [api] = instances();
+  const board = native.mock.calls[0][0];
+  expect(board.style.getPropertyValue("--board-image")).toBe("url('/board/gray.svg')");
+
+  await act(async () => atoms.set(boardImageAtom, "workers-club.svg"));
+  for (const orientation of ["white", "black"] as const) {
+    vi.mocked(api.set).mockClear();
+    await render({ orientation });
+    expect(board.style.getPropertyValue("--board-image")).toBe("url('/board/workers-club.svg')");
+    expect(board.style.getPropertyValue("--board-coord-color-white")).toBe("#E8DFCB");
+    expect(board.style.getPropertyValue("--board-coord-color-black")).toBe("#202321");
+    expect(board.classList.contains(`orientation-${orientation}`)).toBe(true);
+    expect(board.classList.contains("is3d")).toBe(false);
+    expect(board.querySelectorAll("coords.ranks coord")).toHaveLength(8);
+    expect(board.querySelectorAll("coords.files coord")).toHaveLength(8);
+    expect(api.state.orientation).toBe(orientation);
+    expect(api.getFen()).toBe(INITIAL_FEN.split(" ")[0]);
+    expect(api.set).toHaveBeenCalledTimes(1);
+    expect(native).toHaveBeenCalledTimes(1);
+    expect(api.destroy).not.toHaveBeenCalled();
+  }
+  await unmount();
+  expect(api.destroy).toHaveBeenCalledTimes(1);
+});
+
 it("cancels and plays real premoves through the imperative handle after a turn update", async () => {
   const ref = createRef<ChessgroundRef>();
   const after = vi.fn<NonNullable<Api["state"]["movable"]["events"]["after"]>>();
