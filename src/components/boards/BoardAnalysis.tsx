@@ -145,6 +145,9 @@ function BoardAnalysis() {
   const practiceTabSelected = useAtomValue(currentPracticeTabAtom);
   const isRepertoire = tabFile?.metadata.type === "repertoire";
   const practicing = currentTabSelected === "practice" && practiceTabSelected === "train";
+  const practicePath = useStore(store, (s) => s.practicePath);
+  // The Train tab remains selected after Stop, but its saved shapes are editable again.
+  const protectPracticeShapes = practicing && practicePath !== null;
   const practiceState = useAtomValue(practiceStateAtom);
   const isPracticeRating = practicing && practiceState.phase === "correct";
 
@@ -157,7 +160,7 @@ function BoardAnalysis() {
 
   useHotkeys([
     [keyMap.SAVE_FILE.keys, () => userSaveFile()],
-    [keyMap.CLEAR_SHAPES.keys, () => clearShapes()],
+    [keyMap.CLEAR_SHAPES.keys, () => !protectPracticeShapes && clearShapes()],
   ]);
   useHotkeys([
     [keyMap.ANNOTATION_BRILLIANT.keys, () => !isPracticeRating && setAnnotation("!!")],

@@ -112,6 +112,8 @@ function Board({
   );
   const headers = useStore(store, (s) => s.headers);
   const currentNode = useStore(store, (s) => s.currentNode());
+  const practicePath = useStore(store, (s) => s.practicePath);
+  const protectPracticeShapes = practicing && practicePath !== null;
 
   const arrows = useAtomValue(
     bestMovesFamily({
@@ -314,7 +316,7 @@ function Board({
     }
   }
 
-  if (currentNode.shapes.length > 0) {
+  if (!protectPracticeShapes && currentNode.shapes.length > 0) {
     shapes = shapes.concat(currentNode.shapes);
   }
 
@@ -475,7 +477,7 @@ function Board({
               className={`${classes.chessboard} ${is3d ? "is3d" : ""}`}
               ref={boardRef}
               onClick={() => {
-                eraseDrawablesOnClick && clearShapes();
+                !protectPracticeShapes && eraseDrawablesOnClick && clearShapes();
               }}
               onWheel={(e) => {
                 if (enableBoardScroll) {
@@ -579,7 +581,7 @@ function Board({
                   deleteOnDropOff: editingMode,
                 }}
                 drawable={{
-                  enabled: true,
+                  enabled: !protectPracticeShapes,
                   visible: true,
                   defaultSnapToValidMove: snapArrows,
                   autoShapes: shapes,
@@ -592,7 +594,7 @@ function Board({
                     },
                   } as unknown as DrawBrushes,
                   onChange: (shapes) => {
-                    setShapes(shapes);
+                    if (!protectPracticeShapes) setShapes(shapes);
                   },
                 }}
               />
