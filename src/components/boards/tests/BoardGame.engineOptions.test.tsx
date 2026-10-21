@@ -225,6 +225,52 @@ it.each([
   expect(mocks.startGame.mock.calls[0][1].black).toMatchObject({ go });
 });
 
+for (const settings of [
+  [
+    { name: "Elo", value: 1800 },
+    { name: "SelfElo", value: 1200 },
+    { name: "OppoElo", value: 1300 },
+  ],
+  [{ name: "Elo", value: 1500 }],
+  [
+    { name: "SelfElo", value: 1200 },
+    { name: "Elo", value: 1800 },
+  ],
+  [
+    { name: "Elo", value: 1800 },
+    { name: "OppoElo", value: 1300 },
+  ],
+] satisfies EngineSettings[]) {
+  it.each([
+    { inputColor: "white", engineColor: "black" },
+    { inputColor: "black", engineColor: "white" },
+  ] as const)(
+    `forwards persisted default-valued overrides ${JSON.stringify(settings)} to $engineColor`,
+    async ({ inputColor, engineColor }) => {
+      const persistedEngine = {
+        ...catalogEngine,
+        settings: [...settings, { name: "MultiPV", value: 3 }],
+      };
+      // renderGame hydrates a fresh Jotai store from JSON via the real catalog schema.
+      await renderGame(inputColor, persistedEngine);
+      expect(mocks.readTextFile).toHaveBeenCalled();
+      expect(atoms.get(enginesAtom)).toEqual([persistedEngine]);
+      await clickStartGame();
+      expect(mocks.startGame.mock.calls[0][1][engineColor]).toEqual({
+        type: "engine",
+        name: persistedEngine.name,
+        path: persistedEngine.path,
+        options: settings.map(({ name, value }) => ({ name, value: String(value) })),
+        go: { t: "Depth", c: 12 },
+      });
+      expect(mocks.startGame.mock.calls[0][1][inputColor]).toEqual({
+        type: "human",
+        name: "Human",
+      });
+    },
+  );
+}
+
 it.each([{ t: "Infinite" }, null, undefined] satisfies (GoMode | null | undefined)[])(
   "retains the finite game limit when the engine default is %j",
   async (go) => {

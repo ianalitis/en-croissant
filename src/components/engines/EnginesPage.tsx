@@ -331,29 +331,16 @@ function EngineSettings({
     });
   }
 
-  function setSetting(
-    name: string,
-    value: string | number | boolean | null,
-    def: string | number | boolean | null,
-  ) {
-    const newSettings = engine.settings || [];
-    const setting = newSettings.find((setting) => setting.name === name);
-    if (setting) {
-      setting.value = value;
+  function setSetting(name: string, value: string | number | boolean | null) {
+    const newSettings = [...(engine.settings || [])];
+    const index = newSettings.findIndex((setting) => setting.name === name);
+    if (index !== -1) {
+      newSettings[index] = { ...newSettings[index], value };
     } else {
       newSettings.push({ name, value });
     }
-    if (value !== def || requiredEngineSettings.includes(name)) {
-      setEngine({
-        ...engine,
-        settings: newSettings,
-      });
-    } else {
-      setEngine({
-        ...engine,
-        settings: newSettings.filter((setting) => setting.name !== name),
-      });
-    }
+    // An explicit choice overrides inheritance even when it equals the advertised default.
+    setEngine({ ...engine, settings: newSettings });
   }
 
   const [deleteModal, toggleDeleteModal] = useToggle();
@@ -443,7 +430,7 @@ function EngineSettings({
                       min={Number(v.min)}
                       max={Number(v.max)}
                       value={Number(v.value)}
-                      onChange={(e) => setSetting(v.name, e, Number(v.default))}
+                      onChange={(e) => setSetting(v.name, e)}
                     />
                   );
                 })
@@ -454,7 +441,7 @@ function EngineSettings({
                       label={v.name}
                       data={v.var}
                       value={v.value}
-                      onChange={(e) => setSetting(v.name, e, v.default)}
+                      onChange={(e) => setSetting(v.name, e)}
                     />
                   );
                 })
@@ -467,7 +454,7 @@ function EngineSettings({
                           label={v.name}
                           placeholder={`/path/to/tb${syzygyPathSeparator}/path/to/tb2`}
                           value={v.value || ""}
-                          onChange={(e) => setSetting(v.name, e.currentTarget.value, v.default)}
+                          onChange={(e) => setSetting(v.name, e.currentTarget.value)}
                         />
                         <Button
                           variant="default"
@@ -480,7 +467,7 @@ function EngineSettings({
                             if (!selected) return;
 
                             const directories = Array.isArray(selected) ? selected : [selected];
-                            setSetting(v.name, directories.join(syzygyPathSeparator), v.default);
+                            setSetting(v.name, directories.join(syzygyPathSeparator));
                           }}
                         >
                           {t("Common.Open")}
@@ -501,11 +488,11 @@ function EngineSettings({
                             multiple: false,
                           });
                           if (!selected) return;
-                          setSetting(v.name, selected as string, v.default);
+                          setSetting(v.name, selected as string);
                         }}
                         onChange={(e) => {
                           if (e === null) {
-                            setSetting(v.name, null, v.default);
+                            setSetting(v.name, null);
                           }
                         }}
                       />
@@ -516,7 +503,7 @@ function EngineSettings({
                       key={v.name}
                       label={v.name}
                       value={v.value || ""}
-                      onChange={(e) => setSetting(v.name, e.currentTarget.value, v.default)}
+                      onChange={(e) => setSetting(v.name, e.currentTarget.value)}
                     />
                   );
                 })
@@ -533,9 +520,7 @@ function EngineSettings({
                   label={o.value.name}
                   checked={!!o.value.value}
                   disabled={o.value.name === "UCI_Chess960"}
-                  onChange={(e) =>
-                    setSetting(o.value.name, e.currentTarget.checked, o.value.default as boolean)
-                  }
+                  onChange={(e) => setSetting(o.value.name, e.currentTarget.checked)}
                 />
               );
             })}
