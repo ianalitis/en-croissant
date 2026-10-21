@@ -1,4 +1,4 @@
-//! Disposable protocol fixture, not a Maia binary/model or score-provenance test.
+//! Disposable protocol fixture, not a Maia binary/model or score-validity test.
 //! The alias deliberately overwrites both channels, matching the admitted contract.
 use super::{BaseEngine, EngineOption};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
@@ -61,7 +61,12 @@ while (( SECONDS < 8 )); do
                 while (( SECONDS < 8 )); do IFS= read -r -t 1 ignored || :; done
                 exit 91
             fi
+            if [ -f score-go ]; then
+                printf 'info depth 1 nodes 10 multipv 1 score cp 42 pv e2e4\n'
+                printf 'info depth 1 nodes 10 multipv 2 score cp 21 pv d2d4\n'
+            fi
             printf 'bestmove e2e4\n'
+            [ -f score-go ] && exit 0
             ;;
         quit) exit 0 ;;
     esac
@@ -79,6 +84,18 @@ done
 
     pub(crate) fn stall_go(&self) {
         std::fs::write(self.directory.path().join("stall-go"), "").unwrap();
+    }
+
+    pub(crate) fn score_and_exit_on_go(&self) {
+        std::fs::write(self.directory.path().join("score-go"), "").unwrap();
+    }
+
+    pub(crate) fn all_commands(&self) -> Vec<String> {
+        std::fs::read_to_string(self.directory.path().join("commands"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     pub(crate) async fn phase(&self) {

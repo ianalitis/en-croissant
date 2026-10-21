@@ -148,7 +148,8 @@ fn app() -> tauri::App<MockRuntime> {
         .unwrap();
     tauri_specta::Builder::<MockRuntime>::new()
         .events(tauri_specta::collect_events![
-            crate::progress::ProgressEvent
+            crate::progress::ProgressEvent,
+            BestMovesPayload
         ])
         .mount_events(&app);
     app
@@ -772,32 +773,25 @@ async fn maia_conditioning_invalid_values_precede_all_writes_and_preserve_reques
 }
 
 #[tokio::test]
-async fn maia_conditioning_report_uses_shared_options_and_reaps() {
+async fn maia_score_report_rejects_before_options_search_and_preprocessing() {
     let app = app();
     let fixture = MaiaFixture::new(SIGNATURE);
+    let mut options = options();
+    options.moves = vec!["e2e4".into()];
     let result = timeout(
         WATCHDOG,
         run(
             &app,
             &fixture.path,
-            options(),
+            options,
             opts(&[("SelfElo", "2100"), ("Elo", "1800"), ("MultiPV", "8")]),
         ),
     )
     .await
-    .unwrap()
     .unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(fixture.state(), "2100,1800");
-    assert_eq!(
-        fixture.commands(),
-        [
-            "setoption name UCI_Chess960 value false",
-            "setoption name MultiPV value 2",
-            "setoption name SelfElo value 2100",
-            "setoption name OppoElo value 1800",
-        ]
-    );
+    assert_maia_rejection(&result);
+    assert_eq!(COMPLETED_PLIES.with(Cell::get), 0);
+    assert_eq!(fixture.all_commands(), ["uci", "isready"]);
     assert!(app.state::<AppState>().analysis_cancel_flags.is_empty());
     fixture.assert_reaped();
 }
@@ -853,6 +847,10 @@ async fn maia_conditioning_signature_negative_matrix_preserves_ordinary_engine()
     for signature in signatures {
         let fixture = MaiaFixture::new(&signature);
         let mut process = maia_process(&fixture).await;
+        assert!(
+            process.base.ensure_objective_analysis().is_ok(),
+            "{signature}"
+        );
         let request = maia_options(&[
             ("Hash", "16"),
             ("SelfElo", "2100"),
@@ -906,6 +904,7 @@ async fn maia_conditioning_signature_positive_defaults_and_reinitialization() {
         .replace("default 1300", "default 2000");
     let fixture = MaiaFixture::new(&signature);
     let mut process = maia_process(&fixture).await;
+    assert_maia_rejection(&process.base.ensure_objective_analysis());
     process.set_options(maia_options(&[])).await.unwrap();
     fixture.sync(&mut process.base).await;
     assert_eq!(fixture.state(), "1000,2000");
@@ -933,6 +932,7 @@ async fn maia_conditioning_signature_positive_defaults_and_reinitialization() {
         process.emitted_options.is_none(),
         "reinitialization must discard the signature"
     );
+    assert!(process.base.ensure_objective_analysis().is_ok());
     assert_eq!(
         &fixture.commands()[3..],
         [
@@ -949,6 +949,7 @@ async fn maia_conditioning_signature_positive_defaults_and_reinitialization() {
     process.set_options(maia_options(&[])).await.unwrap();
     fixture.sync(&mut process.base).await;
     assert_eq!(fixture.state(), "1200,1300");
+    assert_maia_rejection(&process.base.ensure_objective_analysis());
     assert_eq!(
         &fixture.commands()[5..],
         [
@@ -993,7 +994,7 @@ async fn maia_conditioning_validation_preserves_successful_cache_and_write_failu
 }
 
 #[tokio::test]
-async fn maia_conditioning_report_invalid_input_reaps_without_any_option_writes() {
+async fn maia_score_report_rejection_precedes_invalid_conditioning_and_fen() {
     let app = app();
     let fixture = MaiaFixture::new(SIGNATURE);
     let result = timeout(
@@ -1001,25 +1002,28 @@ async fn maia_conditioning_report_invalid_input_reaps_without_any_option_writes(
         run(
             &app,
             &fixture.path,
-            options(),
+            AnalysisOptions {
+                fen: "not a fen".into(),
+                ..options()
+            },
             opts(&[("Hash", "32"), ("Elo", "5001"), ("Elo", "1900")]),
         ),
     )
     .await
     .unwrap();
-    assert!(
-        matches!(result, Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::InvalidInput)
-    );
-    assert!(fixture.commands().is_empty());
+    assert_maia_rejection(&result);
+    assert_eq!(fixture.all_commands(), ["uci", "isready"]);
     assert_eq!(fixture.state(), "1200,1300");
     assert!(app.state::<AppState>().analysis_cancel_flags.is_empty());
     fixture.assert_reaped();
 }
 
 #[tokio::test]
-async fn maia_conditioning_report_cancellation_preserves_conditioning_and_reaps() {
+async fn maia_score_negative_signature_report_cancellation_preserves_options_and_reaps() {
     let app = app();
-    let fixture = MaiaFixture::new(SIGNATURE);
+    // Known Maia is now rejected before search. Preserve the cancellation
+    // contract using an unrecognized process, not an obsolete Maia report.
+    let fixture = MaiaFixture::new(&SIGNATURE.replace("Maia3", "Ordinary"));
     fixture.stall_go();
     let report = run(
         &app,
@@ -1039,18 +1043,171 @@ async fn maia_conditioning_report_cancellation_preserves_conditioning_and_reaps(
     })
     .await
     .unwrap();
-    assert_eq!(fixture.state(), "1800,2200");
+    assert_eq!(fixture.state(), "1800,1800");
     assert_eq!(
         fixture.commands(),
         [
             "setoption name UCI_Chess960 value false",
-            "setoption name MultiPV value 2",
-            "setoption name SelfElo value 1800",
-            "setoption name OppoElo value 2200"
+            "setoption name OppoElo value 2200",
+            "setoption name Elo value 1800",
+            "setoption name MultiPV value 2"
         ]
     );
     assert!(app.state::<AppState>().analysis_cancel_flags.is_empty());
     fixture.assert_reaped();
+}
+
+fn assert_maia_rejection<T: std::fmt::Debug>(result: &Result<T, Error>) {
+    let error = result
+        .as_ref()
+        .expect_err("known Maia must not supply objective scores");
+    let message = error.to_string();
+    assert!(
+        message.starts_with("MAIA_OBJECTIVE_ANALYSIS_UNSUPPORTED:"),
+        "{message}"
+    );
+    assert!(message.contains("model-derived"), "{message}");
+    assert!(message.contains("another analysis engine"), "{message}");
+    assert!(message.contains("opponent"), "{message}");
+    assert_eq!(serde_json::to_value(error).unwrap(), message);
+}
+
+async fn live(
+    app: &tauri::App<MockRuntime>,
+    fixture: &MaiaFixture,
+    options: EngineOptions,
+) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
+    get_best_moves_inner(
+        "live-engine".into(),
+        fixture.path.to_string_lossy().into_owned(),
+        "live-tab".into(),
+        GoMode::Depth(1),
+        options,
+        app.handle().clone(),
+        app.state(),
+    )
+    .await
+}
+
+fn observe_scores(app: &tauri::App<MockRuntime>) -> Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = events.clone();
+    app.listen(BestMovesPayload::NAME, move |event| {
+        observed
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str(event.payload()).unwrap());
+    });
+    events
+}
+
+#[tokio::test]
+async fn maia_score_live_new_rejects_without_options_search_event_or_registration() {
+    let app = app();
+    let fixture = MaiaFixture::new(SIGNATURE);
+    fixture.score_and_exit_on_go();
+    let events = observe_scores(&app);
+    let result = timeout(WATCHDOG, live(&app, &fixture, maia_options(&[])))
+        .await
+        .unwrap();
+    assert_maia_rejection(&result);
+    assert!(events.lock().unwrap().is_empty());
+    assert_eq!(fixture.all_commands(), ["uci", "isready"]);
+    assert!(app.state::<AppState>().engine_processes.is_empty());
+    fixture.assert_reaped();
+}
+
+#[tokio::test]
+async fn maia_score_live_reused_rejects_before_cache_return_or_new_search() {
+    for cached in [true, false] {
+        let app = app();
+        let fixture = MaiaFixture::new(SIGNATURE);
+        let events = observe_scores(&app);
+        let mut process = maia_process(&fixture).await;
+        let request = maia_options(&[]);
+        process.options = request.clone();
+        process.go_mode = GoMode::Depth(1);
+        process.running = cached;
+        process.last_progress = 99.0;
+        process.last_best_moves = vec![BestMoves::default()];
+        let process = Arc::new(Mutex::new(process));
+        app.state::<AppState>()
+            .engine_processes
+            .insert(("live-tab".into(), "live-engine".into()), process.clone());
+        let result = timeout(WATCHDOG, live(&app, &fixture, request))
+            .await
+            .unwrap();
+        assert_maia_rejection(&result);
+        assert!(events.lock().unwrap().is_empty());
+        assert_eq!(fixture.all_commands(), ["uci", "isready"]);
+        assert!(app.state::<AppState>().engine_processes.is_empty());
+        fixture.assert_reaped();
+    }
+}
+
+#[tokio::test]
+async fn maia_score_negative_signature_preserves_live_cache_fast_path() {
+    let app = app();
+    let fixture = MaiaFixture::new(&SIGNATURE.replace("Maia3", "Ordinary"));
+    let mut process = maia_process(&fixture).await;
+    let request = maia_options(&[]);
+    process.options = request.clone();
+    process.go_mode = GoMode::Depth(1);
+    process.running = true;
+    process.last_progress = 77.0;
+    process.last_best_moves = vec![BestMoves::default()];
+    let process = Arc::new(Mutex::new(process));
+    let key = ("live-tab".into(), "live-engine".into());
+    app.state::<AppState>()
+        .engine_processes
+        .insert(key.clone(), process.clone());
+    let (progress, scores) = timeout(WATCHDOG, live(&app, &fixture, request))
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(progress, 77.0);
+    assert_eq!(scores.len(), 1);
+    assert!(app.state::<AppState>().engine_processes.contains_key(&key));
+    assert_eq!(fixture.all_commands(), ["uci", "isready"]);
+    process.lock().await.base.terminate_report().await.unwrap();
+    app.state::<AppState>().engine_processes.remove(&key);
+    fixture.assert_reaped();
+}
+
+#[tokio::test]
+async fn maia_score_negative_signature_preserves_report_and_live_scores() {
+    let app = app();
+    let signature = SIGNATURE.replace("CSSLab", "OtherAuthor");
+    let report_fixture = MaiaFixture::new(&signature);
+    report_fixture.score_and_exit_on_go();
+    let analysis = timeout(WATCHDOG, run(&app, &report_fixture.path, options(), vec![]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(analysis.len(), 1);
+    assert_eq!(analysis[0].best.len(), 2);
+    assert_eq!(analysis[0].best[0].score.value, ScoreValue::Cp(42));
+    assert!(app.state::<AppState>().analysis_cancel_flags.is_empty());
+    report_fixture.assert_reaped();
+
+    let fixture = MaiaFixture::new(&signature);
+    fixture.score_and_exit_on_go();
+    let events = observe_scores(&app);
+    assert!(timeout(WATCHDOG, live(&app, &fixture, maia_options(&[])))
+        .await
+        .unwrap()
+        .unwrap()
+        .is_none());
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["bestLines"][0]["score"]["value"]["value"], 42);
+    assert_eq!(events[1]["progress"], 100.0);
+    assert!(app.state::<AppState>().engine_processes.is_empty());
+    // The ordinary shared lifecycle still drops/kills; do not claim it gained
+    // the rejected-process mandatory reap contract.
+    drop(events);
+    fixture.reap_after_drop().await;
 }
 
 #[tokio::test]

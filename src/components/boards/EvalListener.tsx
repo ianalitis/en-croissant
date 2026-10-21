@@ -26,7 +26,6 @@ import {
   stopEngine,
 } from "@/utils/engines";
 import { getBestMoves as lichessGetBestMoves } from "@/utils/lichess/api";
-import { useThrottledEffect } from "@/utils/misc";
 import { TreeStateContext } from "../common/TreeStateContext";
 
 function EvalListener() {
@@ -124,7 +123,7 @@ function EngineListener({
   const [, setProgress] = useAtom(engineProgressFamily({ engine: engine.id, tab: activeTab! }));
 
   const [, setEngineVariation] = useAtom(engineMovesFamily({ engine: engine.id, tab: activeTab! }));
-  const [settings] = useAtom(
+  const [settings, setSettings] = useAtom(
     tabEngineSettingsFamily({
       engineId: engine.id,
       defaultSettings: engine.settings ?? undefined,
@@ -198,12 +197,17 @@ function EngineListener({
     [engine.type, engine],
   );
 
-  useThrottledEffect(
-    () => {
+  const searchingMovesJson = JSON.stringify(searchingMoves);
+  useEffect(() => {
+    // Invalidate immediately on changes, not only when the next delayed request
+    // starts. A late rejection must not pause a newer request or another tab.
+    let current = true;
+    const requestMoves: string[] = JSON.parse(searchingMovesJson);
+    const timer = setTimeout(() => {
       if (settings.enabled) {
         if (isGameOver) {
           if (engine.type === "local") {
-            stopEngine(engine, activeTab!);
+            stopEngine(engine, activeTab!).catch(console.error);
           }
         } else {
           const options =
@@ -212,41 +216,57 @@ function EngineListener({
               value: s.value?.toString() || "",
             })) ?? [];
           getBestMoves(activeTab!, settings.go, {
-            moves: searchingMoves,
+            moves: requestMoves,
             fen: searchingFen,
             extraOptions: options,
-          }).then((moves) => {
-            if (moves) {
-              const [progress, bestMoves] = moves;
-              setEngineVariation((prev) => {
-                const newMap = new Map(prev);
-                newMap.set(`${searchingFen}:${searchingMoves.join(",")}`, bestMoves);
-                return newMap;
-              });
-              setProgress(progress);
-            }
-          });
+          })
+            .then((moves) => {
+              if (current && moves) {
+                const [progress, bestMoves] = moves;
+                setEngineVariation((prev) => {
+                  const newMap = new Map(prev);
+                  newMap.set(`${searchingFen}:${requestMoves.join(",")}`, bestMoves);
+                  return newMap;
+                });
+                setProgress(progress);
+              }
+            })
+            .catch((error: unknown) => {
+              // Local unwrap already notifies. Do not show a second notification.
+              const message = error instanceof Error ? error.message : String(error);
+              if (
+                current &&
+                engine.type === "local" &&
+                message.startsWith("MAIA_OBJECTIVE_ANALYSIS_UNSUPPORTED:")
+              ) {
+                setSettings((previous) => ({ ...previous, enabled: false }));
+                setEngineVariation(new Map());
+                setProgress(0);
+              }
+            });
         }
       } else {
         if (engine.type === "local") {
-          stopEngine(engine, activeTab!);
+          stopEngine(engine, activeTab!).catch(console.error);
         }
       }
-    },
-    50,
-    [
-      settings.enabled,
-      JSON.stringify(settings.settings),
-      settings.go,
-      searchingFen,
-      JSON.stringify(searchingMoves),
-      isGameOver,
-      activeTab,
-      getBestMoves,
-      setEngineVariation,
-      engine,
-    ],
-  );
+    }, 50);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [
+    settings,
+    setSettings,
+    searchingFen,
+    searchingMovesJson,
+    isGameOver,
+    activeTab,
+    getBestMoves,
+    setEngineVariation,
+    setProgress,
+    engine,
+  ]);
   return null;
 }
 

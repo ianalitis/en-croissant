@@ -1,5 +1,7 @@
 import { Button, Checkbox, Group, Modal, NumberInput, Select, Stack } from "@mantine/core";
 import { useForm } from "@mantine/form";
+import { notifications } from "@mantine/notifications";
+import { IconX } from "@tabler/icons-react";
 import { useAtom, useAtomValue } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { memo, useContext, useEffect, useMemo } from "react";
@@ -94,11 +96,20 @@ function ReportModal({
         engineSettings,
       )
       .then((analysis) => {
-        if (analysis.status === "ok") {
-          addAnalysis(analysis.data, {
-            showVariations: form.values.variations,
-          });
+        if (analysis.status === "error") {
+          throw new Error(analysis.error);
         }
+        addAnalysis(analysis.data, {
+          showVariations: form.values.variations,
+        });
+      })
+      .catch((error: unknown) => {
+        notifications.show({
+          title: "Error",
+          message: error instanceof Error ? error.message : String(error),
+          color: "red",
+          icon: <IconX />,
+        });
       })
       .finally(() => setInProgress(false));
   }

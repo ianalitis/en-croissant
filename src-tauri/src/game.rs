@@ -1625,6 +1625,37 @@ mod maia_conditioning_tests {
     }
 
     #[tokio::test]
+    async fn maia_score_opponent_slot_still_yields_and_applies_bestmove() {
+        let fixture = Fixture::new(SIGNATURE);
+        let mut game = controller(
+            player(&fixture, &[("SelfElo", "2100"), ("Elo", "1800")]),
+            PlayerConfig::Human {
+                name: "Human".into(),
+            },
+        );
+        timeout(WATCHDOG, async {
+            game.init_engine(Color::White, CastlingMode::Standard)
+                .await
+                .unwrap();
+            let best_move = {
+                let mut engine = game.white_engine.as_ref().unwrap().lock().await;
+                engine.set_position(&game.initial_fen, &[]).await.unwrap();
+                engine.go(&GoMode::Depth(1)).await.unwrap();
+                let best_move = engine.wait_for_bestmove().await.unwrap();
+                engine.terminate_report().await.unwrap();
+                best_move
+            };
+            assert_eq!(best_move, "e2e4");
+            game.apply_move(&best_move).unwrap();
+            assert_eq!(game.moves[0].uci, "e2e4");
+            assert_eq!(fixture.state(), "2100,1800");
+        })
+        .await
+        .unwrap();
+        fixture.assert_reaped();
+    }
+
+    #[tokio::test]
     async fn maia_conditioning_game_both_slots_all_permutations_and_chess960() {
         let values = [("Elo", "1800"), ("SelfElo", "2100"), ("OppoElo", "2200")];
         for order in [

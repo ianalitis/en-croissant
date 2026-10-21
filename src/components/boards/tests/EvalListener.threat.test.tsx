@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { Accordion, MantineProvider } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { INITIAL_FEN } from "chessops/fen";
 import { createStore, Provider } from "jotai";
 import { act } from "react";
@@ -30,6 +31,7 @@ import EvalListener from "../EvalListener";
 
 const mocks = vi.hoisted(() => ({
   getBestMoves: vi.fn<typeof commands.getBestMoves>(),
+  stopEngine: vi.fn<typeof commands.stopEngine>(),
   listen:
     vi.fn<(callback: (event: { payload: BestMovesPayload }) => void) => Promise<() => void>>(),
   readTextFile: vi.fn<() => Promise<string>>(),
@@ -37,7 +39,7 @@ const mocks = vi.hoisted(() => ({
 // Only native I/O and unrelated leaf editors are mocked. Requests, event handling,
 // cache selection, Mantine rendering, Jotai, Zustand and throttling stay real.
 vi.mock("@/bindings", () => ({
-  commands: { getBestMoves: mocks.getBestMoves },
+  commands: { getBestMoves: mocks.getBestMoves, stopEngine: mocks.stopEngine },
   events: { bestMovesPayload: { listen: mocks.listen } },
 }));
 vi.mock("@tauri-apps/api/path", () => ({
@@ -119,6 +121,8 @@ beforeEach(() => {
   callbacks.clear();
   mocks.readTextFile.mockResolvedValue(JSON.stringify([engine]));
   mocks.getBestMoves.mockResolvedValue({ status: "ok", data: null });
+  mocks.stopEngine.mockResolvedValue({ status: "ok", data: null });
+  vi.spyOn(notifications, "show").mockReturnValue("test-notification");
   mocks.listen.mockImplementation(async (callback) => {
     callbacks.add(callback);
     return () => {
@@ -128,6 +132,7 @@ beforeEach(() => {
   atoms = createStore();
   atoms.set(tabsAtom, [
     { value: tab, name: "Threat test", type: "analysis", gameOrigin: { kind: "none" } },
+    { value: "other-tab", name: "Other tab", type: "analysis", gameOrigin: { kind: "none" } },
   ]);
   atoms.set(activeTabAtom, tab);
   atoms.set(currentThreatAtom, true);
@@ -284,6 +289,143 @@ it.each(["root", "moves"] as const)(
       normalLine.uciMoves,
     );
     expect(atoms.get(currentThreatAtom)).toBe(true);
+  },
+);
+
+const maiaError =
+  "MAIA_OBJECTIVE_ANALYSIS_UNSUPPORTED: Maia scores are model-derived. Choose another analysis engine. Maia remains available as an opponent.";
+const settingsAtom = tabEngineSettingsFamily({ engineId: engine.id, tab });
+
+it("maia_score pauses only the current tab engine, clears transient data, and retries only on manual enable", async () => {
+  const otherTabSettings = tabEngineSettingsFamily({ engineId: engine.id, tab: "other-tab" });
+  const otherEngineSettings = tabEngineSettingsFamily({ engineId: "other-engine", tab });
+  for (const atom of [otherTabSettings, otherEngineSettings]) {
+    atoms.set(atom, { ...atoms.get(settingsAtom) });
+  }
+  const otherCache = engineMovesFamily({ engine: engine.id, tab: "other-tab" });
+  atoms.set(otherCache, new Map([["untouched", [normalLine]]]));
+  seedBothCaches();
+  atoms.set(progressAtom, 63);
+  tree.getState().setScore(normalLine.score);
+  const savedRoot = tree.getState().root;
+  mocks.getBestMoves.mockResolvedValue({ status: "error", error: maiaError });
+  await mount("listener");
+  expect(atoms.get(settingsAtom).enabled).toBe(false);
+  expect(atoms.get(cacheAtom).size).toBe(0);
+  expect(atoms.get(progressAtom)).toBe(0);
+  expect(tree.getState().root).toBe(savedRoot);
+  expect(await atoms.get(enginesAtom)).toEqual([engine]);
+  expect(atoms.get(otherTabSettings).enabled).toBe(true);
+  expect(atoms.get(otherEngineSettings).enabled).toBe(true);
+  expect(atoms.get(otherCache).get("untouched")).toEqual([normalLine]);
+  expect(notifications.show).toHaveBeenCalledTimes(1);
+  expect(notifications.show).toHaveBeenCalledWith(expect.objectContaining({ message: maiaError }));
+  await act(async () => {
+    tree.getState().makeMoves({ payload: ["Re2+"] });
+    atoms.set(currentThreatAtom, false);
+  });
+  await flushRequest();
+  expect(mocks.getBestMoves).toHaveBeenCalledTimes(1);
+  expect(notifications.show).toHaveBeenCalledTimes(1);
+  await act(async () => atoms.set(settingsAtom, (prev) => ({ ...prev, enabled: true })));
+  await flushRequest();
+  expect(mocks.getBestMoves).toHaveBeenCalledTimes(2);
+  expect(atoms.get(settingsAtom).enabled).toBe(false);
+  expect(notifications.show).toHaveBeenCalledTimes(2);
+});
+
+it.each(["ordinary failure", `Wrapped ${maiaError}`, "MAIA_OBJECTIVE_ANALYSIS_UNSUPPORTEDish"])(
+  "maia_score handles non-prefix error without pausing or clearing: %s",
+  async (error) => {
+    seedBothCaches();
+    atoms.set(progressAtom, 63);
+    const cache = atoms.get(cacheAtom);
+    mocks.getBestMoves.mockResolvedValue({ status: "error", error });
+    await mount("listener");
+    expect(atoms.get(settingsAtom).enabled).toBe(true);
+    expect(atoms.get(cacheAtom)).toBe(cache);
+    expect(atoms.get(progressAtom)).toBe(63);
+    expect(notifications.show).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("maia_score catches thrown native failures without disabling the engine", async () => {
+  mocks.getBestMoves.mockRejectedValue(new Error("native invocation failed"));
+  await mount("listener");
+  expect(atoms.get(settingsAtom).enabled).toBe(true);
+});
+
+it.each(["tab", "engine", "settings", "go", "position", "enabled"] as const)(
+  "maia_score ignores stale rejection after %s changes, even before the next throttled request",
+  async (change) => {
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof commands.getBestMoves>>>();
+    mocks.getBestMoves.mockReturnValueOnce(pending.promise);
+    await mount("listener");
+    await act(async () => {
+      seedBothCaches();
+      atoms.set(progressAtom, 63);
+    });
+    const cache = atoms.get(cacheAtom);
+    const otherTab = "other-tab";
+    const otherSettings = tabEngineSettingsFamily({ engineId: engine.id, tab: otherTab });
+    atoms.set(otherSettings, { ...atoms.get(settingsAtom) });
+    await act(async () => {
+      if (change === "tab") atoms.set(activeTabAtom, otherTab);
+      if (change === "engine")
+        await atoms.set(enginesAtom, [{ ...engine, path: "/synthetic/replacement" }]);
+      if (change === "settings")
+        atoms.set(settingsAtom, (prev) => ({ ...prev, settings: [{ name: "Hash", value: 32 }] }));
+      if (change === "go")
+        atoms.set(settingsAtom, (prev) => ({ ...prev, go: { t: "Depth", c: 4 } }));
+      if (change === "position") tree.getState().makeMoves({ payload: ["Re2+"] });
+      if (change === "enabled") atoms.set(settingsAtom, (prev) => ({ ...prev, enabled: false }));
+    });
+    await act(async () => pending.resolve({ status: "error", error: maiaError }));
+    expect(atoms.get(settingsAtom).enabled).toBe(change !== "enabled");
+    expect(atoms.get(otherSettings).enabled).toBe(true);
+    expect(atoms.get(cacheAtom)).toBe(cache);
+    expect(atoms.get(progressAtom)).toBe(63);
+  },
+);
+
+it("maia_score stale rejection cannot clear a newer successful request", async () => {
+  const pending = Promise.withResolvers<Awaited<ReturnType<typeof commands.getBestMoves>>>();
+  mocks.getBestMoves.mockReturnValueOnce(pending.promise);
+  await mount("listener");
+  mocks.getBestMoves.mockResolvedValue({ status: "ok", data: [82, [normalLine]] });
+  await act(async () => atoms.set(settingsAtom, (prev) => ({ ...prev, go: { t: "Depth", c: 3 } })));
+  await flushRequest();
+  const cache = atoms.get(cacheAtom);
+  expect(cache.get(position().threatKey)).toEqual([normalLine]);
+  await act(async () => pending.resolve({ status: "error", error: maiaError }));
+  expect(atoms.get(settingsAtom).enabled).toBe(true);
+  expect(atoms.get(cacheAtom)).toBe(cache);
+  expect(atoms.get(progressAtom)).toBe(82);
+});
+
+it.each(["tab", "engine", "settings"] as const)(
+  "maia_score ignores a rejection in the same turn as a %s change before React commits",
+  async (change) => {
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof commands.getBestMoves>>>();
+    mocks.getBestMoves.mockReturnValueOnce(pending.promise);
+    await mount("listener");
+    await act(async () => {
+      seedBothCaches();
+      atoms.set(progressAtom, 63);
+    });
+    const cache = atoms.get(cacheAtom);
+    await act(async () => {
+      if (change === "tab") atoms.set(activeTabAtom, "other-tab");
+      if (change === "engine")
+        void atoms.set(enginesAtom, [{ ...engine, path: "/synthetic/replacement" }]);
+      if (change === "settings")
+        atoms.set(settingsAtom, (prev) => ({ ...prev, settings: [{ name: "Hash", value: 64 }] }));
+      pending.resolve({ status: "error", error: maiaError });
+      await pending.promise;
+    });
+    expect(atoms.get(settingsAtom).enabled).toBe(true);
+    expect(atoms.get(cacheAtom)).toBe(cache);
+    expect(atoms.get(progressAtom)).toBe(63);
   },
 );
 

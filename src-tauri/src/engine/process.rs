@@ -135,6 +135,16 @@ impl BaseEngine {
         self.reader.take()
     }
 
+    /// Only the existing, actual UCI handshake signature is recognized here.
+    /// Unrecognized engines retain their behavior, not a certification of scores.
+    pub(crate) fn ensure_objective_analysis(&self) -> Result<(), Error> {
+        if self.maia_defaults.is_some() {
+            Err(Error::MaiaObjectiveAnalysisUnsupported)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn reader_mut(&mut self) -> Option<&mut EngineReader> {
         self.reader.as_mut()
     }

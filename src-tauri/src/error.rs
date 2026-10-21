@@ -92,6 +92,9 @@ pub enum Error {
 
     #[error("Analysis cancelled")]
     AnalysisCancelled,
+
+    #[error("MAIA_OBJECTIVE_ANALYSIS_UNSUPPORTED: Maia scores are model-derived. Choose another analysis engine. Maia remains available as an opponent.")]
+    MaiaObjectiveAnalysisUnsupported,
 }
 
 impl From<std::io::Error> for Error {

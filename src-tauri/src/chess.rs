@@ -63,9 +63,27 @@ impl EngineProcess {
     async fn new(path: PathBuf) -> Result<(Self, EngineReader), Error> {
         let mut base = BaseEngine::spawn(path).await?;
         base.init_uci().await?;
-        let reader = base.take_reader().ok_or(Error::EngineDisconnected)?;
+        let mut process = Self::from_base(base);
+        process.ensure_objective_analysis().await?;
+        let reader = process
+            .base
+            .take_reader()
+            .ok_or(Error::EngineDisconnected)?;
 
-        Ok((Self::from_base(base), reader))
+        Ok((process, reader))
+    }
+
+    async fn ensure_objective_analysis(&mut self) -> Result<(), Error> {
+        if let Err(primary) = self.base.ensure_objective_analysis() {
+            if let Err(cleanup) = self.base.terminate_report().await {
+                return Err(std::io::Error::other(format!(
+                    "{primary} Engine termination/reap failed: {cleanup}"
+                ))
+                .into());
+            }
+            return Err(primary);
+        }
+        Ok(())
     }
 
     fn from_base(base: BaseEngine) -> Self {
@@ -354,14 +372,35 @@ pub async fn get_best_moves(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
+    get_best_moves_inner(id, engine, tab, go_mode, options, app, state).await
+}
+
+async fn get_best_moves_inner<R: tauri::Runtime>(
+    id: String,
+    engine: String,
+    tab: String,
+    go_mode: GoMode,
+    options: EngineOptions,
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<(f32, Vec<BestMoves>)>, Error> {
     let path = PathBuf::from(&engine);
 
     let key = (tab.clone(), id.clone());
 
     if state.engine_processes.contains_key(&key) {
         {
-            let process = state.engine_processes.get_mut(&key).unwrap();
-            let mut process = process.lock().await;
+            let entry = state.engine_processes.get_mut(&key).unwrap();
+            let mut process = entry.lock().await;
+            if let Err(error) = process.ensure_objective_analysis().await {
+                let rejected = entry.value().clone();
+                drop(process);
+                drop(entry);
+                state
+                    .engine_processes
+                    .remove_if(&key, |_, current| Arc::ptr_eq(current, &rejected));
+                return Err(error);
+            }
             if options == process.options && go_mode == process.go_mode && process.running {
                 return Ok(Some((
                     process.last_progress,
@@ -558,6 +597,7 @@ async fn analyze_game_inner<R: tauri::Runtime>(
     let mut proc = EngineProcess::from_base(BaseEngine::spawn(PathBuf::from(engine)).await?);
     let engine_work = async {
         proc.base.init_uci().await?;
+        proc.base.ensure_objective_analysis()?;
         let mut reader = proc.base.take_reader().ok_or(Error::EngineDisconnected)?;
         let mut analysis: Vec<MoveAnalysis> = Vec::new();
 
