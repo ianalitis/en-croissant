@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import type { commands } from "@/bindings";
+import type { commands, GoMode } from "@/bindings";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import {
   activeTabAtom,
@@ -132,7 +132,8 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function renderGame(inputColor: "white" | "black") {
+async function renderGame(inputColor: "white" | "black", engine = catalogEngine) {
+  mocks.readTextFile.mockResolvedValue(JSON.stringify([engine]));
   atoms.set(tabsAtom, [
     { value: "options-test", name: "Options test", type: "play", gameOrigin: { kind: "none" } },
   ]);
@@ -160,8 +161,8 @@ async function renderGame(inputColor: "white" | "black") {
     );
   });
   expect(atoms.get(gamePlayer2SettingsAtom)).toMatchObject({
-    engine: catalogEngine,
-    engineSettings: catalogEngine.settings,
+    engine: JSON.parse(JSON.stringify(engine)),
+    engineSettings: engine.settings,
   });
 }
 
@@ -213,6 +214,47 @@ it.each([
     expect(config[inputColor]).toEqual({ type: "human", name: "Human" });
   },
 );
+
+it.each([
+  { t: "Nodes", c: 1 },
+  { t: "Depth", c: 28 },
+  { t: "Time", c: 5000 },
+] satisfies GoMode[])("uses the selected engine's $t default in untimed play", async (go) => {
+  await renderGame("white", { ...catalogEngine, go });
+  await clickStartGame();
+  expect(mocks.startGame.mock.calls[0][1].black).toMatchObject({ go });
+});
+
+it.each([{ t: "Infinite" }, null, undefined] satisfies (GoMode | null | undefined)[])(
+  "retains the finite game limit when the engine default is %j",
+  async (go) => {
+    await renderGame("white", { ...catalogEngine, go });
+    await clickStartGame();
+    expect(mocks.startGame.mock.calls[0][1].black).toMatchObject({ go: { t: "Depth", c: 12 } });
+  },
+);
+
+it("preserves a per-game limit when the same engine's catalog defaults change", async () => {
+  await renderGame("white");
+  await act(async () => {
+    atoms.set(gamePlayer2SettingsAtom, (prev) => ({ ...prev, go: { t: "Nodes", c: 7 } }));
+    await atoms.set(enginesAtom, [{ ...catalogEngine, go: { t: "Depth", c: 30 } }]);
+  });
+  await clickStartGame();
+  expect(mocks.startGame.mock.calls[0][1].black).toMatchObject({ go: { t: "Nodes", c: 7 } });
+});
+
+it("keeps clock-driven play when selecting an engine with a nodes-one default", async () => {
+  await renderGame("white", { ...catalogEngine, go: { t: "Nodes", c: 1 } });
+  await act(async () => {
+    atoms.set(gamePlayer2SettingsAtom, (prev) => ({
+      ...prev,
+      timeControl: { seconds: 180000, increment: 2000 },
+    }));
+  });
+  await clickStartGame();
+  expect(mocks.startGame.mock.calls[0][1].black).toMatchObject({ go: null });
+});
 
 it.each([
   { inputColor: "white", engineColor: "black" },

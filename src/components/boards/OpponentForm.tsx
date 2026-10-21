@@ -108,11 +108,18 @@ export function OpponentForm({
         <EnginesSelect
           engine={opponent.engine}
           setEngine={(engine) =>
-            setOpponent((prev) => ({
-              ...prev,
-              engine,
-              engineSettings: engine?.settings || undefined,
-            }))
+            setOpponent((prev) => {
+              if (prev.type !== "engine") return prev;
+              return {
+                ...prev,
+                go:
+                  engine?.id !== prev.engine?.id && engine?.go && engine.go.t !== "Infinite"
+                    ? engine.go
+                    : prev.go,
+                engine,
+                engineSettings: engine?.settings || undefined,
+              };
+            })
           }
         />
       )}
