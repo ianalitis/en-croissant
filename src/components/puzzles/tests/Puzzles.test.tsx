@@ -62,6 +62,10 @@ const matePuzzle: Puzzle = {
   nb_plays: 0,
   completion: "incomplete",
 };
+const earlyMatePuzzle: Puzzle = {
+  ...matePuzzle,
+  moves: ["h7h8", "g5g4", "h8h7", "g4g7"],
+};
 const native = vi.mocked(NativeChessground);
 const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
 let root: Root;
@@ -250,18 +254,20 @@ it.each(["circle", "arrow", "both"] as const)(
 );
 
 it.each([
-  ["canonical", "g7", "g5g7", false],
-  ["alternative", "h6", "g5h6", false],
-  ["canonical after a wrong attempt", "g7", "g5g7", true],
-  ["alternative after a wrong attempt", "h6", "g5h6", true],
+  ["canonical", "g7", "g5g7", false, matePuzzle],
+  ["alternative", "h6", "g5h6", false, matePuzzle],
+  ["canonical after a wrong attempt", "g7", "g5g7", true, matePuzzle],
+  ["alternative after a wrong attempt", "h6", "g5h6", true, matePuzzle],
+  ["early", "h6", "g5h6", false, earlyMatePuzzle],
+  ["early after a wrong attempt", "h6", "g5h6", true, earlyMatePuzzle],
 ] as const)(
   "disables the real hint control at %s mate, not at the previous position",
-  async (_, to, uci, wrongAttempt) => {
-    await mount();
+  async (_, to, uci, wrongAttempt, puzzle) => {
+    await mount(puzzle);
     const beforeMate = tree.getState().currentNode().fen;
     expect(hint().disabled).toBe(false);
     if (wrongAttempt) {
-      await play("g5", "g4");
+      await play("g5", "g3");
     }
     expect(savedPuzzle().completion).toBe(wrongAttempt ? "incorrect" : "incomplete");
     expect(tree.getState().currentNode().fen).toBe(beforeMate);

@@ -87,9 +87,11 @@ function PuzzleBoard({
     const newPos = pos.clone();
     const uci = makeUci(move);
     newPos.play(move);
+    const isCheckmate = newPos.isCheckmate();
 
-    if (puzzle.moves[currentMove] === uci || newPos.isCheckmate()) {
-      if (currentMove === puzzle.moves.length - 1) {
+    if (puzzle.moves[currentMove] === uci || isCheckmate) {
+      const completesPuzzle = currentMove === puzzle.moves.length - 1 || isCheckmate;
+      if (completesPuzzle) {
         if (puzzle.completion !== "incorrect") {
           await changeCompletion("correct");
         }
@@ -101,11 +103,8 @@ function PuzzleBoard({
           return;
         }
       }
-      // Retain the played final move, including an alternative checkmate or promotion.
-      const newMoves =
-        currentMove === puzzle.moves.length - 1
-          ? [uci]
-          : puzzle.moves.slice(currentMove, currentMove + 2);
+      // Retain the played completing move, including an early checkmate or promotion.
+      const newMoves = completesPuzzle ? [uci] : puzzle.moves.slice(currentMove, currentMove + 2);
       makeMoves({
         payload: newMoves,
         mainline: true,

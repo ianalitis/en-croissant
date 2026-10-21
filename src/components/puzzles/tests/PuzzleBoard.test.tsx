@@ -37,6 +37,10 @@ const matePuzzle: Puzzle = {
   nb_plays: 0,
   completion: "incomplete",
 };
+const earlyMatePuzzle: Puzzle = {
+  ...matePuzzle,
+  moves: ["h7h8", "g5g4", "h8h7", "g4g7"],
+};
 const nextPuzzle: Puzzle = {
   ...matePuzzle,
   id: 2,
@@ -224,71 +228,105 @@ it.each([
   },
 );
 
-it("retains an alternative final mate without changing prior incorrect completion or losing the wrong attempt", async () => {
-  await mount();
-  const before = tree.getState().currentNode().fen;
-  await play("g5", "g4");
-  expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("incorrect");
-  expect(tree.getState().currentNode().fen).toBe(before);
-  expect(tree.getState().position).toEqual([0]);
-  const wrongAttempt = tree.getState().currentNode().children[0];
-  expect(makeUci(wrongAttempt.move!)).toBe("g5g4");
-  await play("g5", "h6");
-  expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("incorrect");
-  expect(container.querySelector("output")?.textContent).toBe("incorrect");
-  expect(expectLine(matePuzzle.fen, ["h7h8", "g5h6"]).isCheckmate()).toBe(true);
-  expect(tree.getState().root.children[0].children[1]).toEqual(wrongAttempt);
-  expect(generatePuzzle).not.toHaveBeenCalled();
-});
-
-it.each(["g7", "h6"] as const)(
-  "lets auto-next replace the board after final mate on %s",
-  async (to) => {
-    atoms.set(jumpToNextPuzzleAtom, true);
-    await mount();
-    const oldBoard = board();
-    const destroyOldBoard = vi.spyOn(oldBoard, "destroy");
-    await play("g5", to);
-    expect(native).toHaveBeenCalledTimes(2);
-    expect(board()).not.toBe(oldBoard);
-    expect(destroyOldBoard).toHaveBeenCalledExactlyOnceWith();
-    expect(oldBoard.state.dom.destroyed).toBe(true);
-    expect(board().state.dom.destroyed).not.toBe(true);
-    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("correct");
-    expect(generatePuzzle).toHaveBeenCalledExactlyOnceWith("synthetic-puzzles.db3");
-    expect(container.querySelector("output")?.textContent).toBe("correct,incomplete");
-    expect(tree.getState().root.fen).toBe(INITIAL_FEN);
-    expectLine(INITIAL_FEN, ["e2e4"]);
-    const nextBoard = board();
-    const destroyNextBoard = vi.spyOn(nextBoard, "destroy");
-    await play("e7", "e5");
-    expect(native).toHaveBeenCalledTimes(3);
-    expect(board()).not.toBe(nextBoard);
-    expect(destroyOldBoard).toHaveBeenCalledTimes(1);
-    expect(destroyNextBoard).toHaveBeenCalledExactlyOnceWith();
-    expect(nextBoard.state.dom.destroyed).toBe(true);
-    expect(board().state.dom.destroyed).not.toBe(true);
-    expect(changeCompletion).toHaveBeenCalledTimes(2);
-    expect(generatePuzzle).toHaveBeenCalledTimes(2);
+it.each([
+  ["final", matePuzzle],
+  ["early", earlyMatePuzzle],
+] as const)(
+  "retains an alternative %s mate without changing prior incorrect completion or losing the wrong attempt",
+  async (_, puzzle) => {
+    await mount(puzzle);
+    const before = tree.getState().currentNode().fen;
+    await play("g5", "g3");
+    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("incorrect");
+    expect(tree.getState().currentNode().fen).toBe(before);
+    expect(tree.getState().position).toEqual([0]);
+    const wrongAttempt = tree.getState().currentNode().children[0];
+    expect(makeUci(wrongAttempt.move!)).toBe("g5g3");
+    await play("g5", "h6");
+    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("incorrect");
+    expect(container.querySelector("output")?.textContent).toBe("incorrect");
+    expect(expectLine(puzzle.fen, ["h7h8", "g5h6"]).isCheckmate()).toBe(true);
+    expect(tree.getState().root.children[0].children[1]).toEqual(wrongAttempt);
+    expect(generatePuzzle).not.toHaveBeenCalled();
   },
 );
 
-it("retains an alternative mate with auto-next enabled but no database", async () => {
+it.each([
+  ["canonical final", "g7", matePuzzle],
+  ["alternative final", "h6", matePuzzle],
+  ["early", "h6", earlyMatePuzzle],
+] as const)("lets auto-next replace the board after %s mate", async (_, to, puzzle) => {
   atoms.set(jumpToNextPuzzleAtom, true);
-  await mount(matePuzzle, null);
+  await mount(puzzle);
+  const oldBoard = board();
+  const destroyOldBoard = vi.spyOn(oldBoard, "destroy");
+  await play("g5", to);
+  expect(native).toHaveBeenCalledTimes(2);
+  expect(board()).not.toBe(oldBoard);
+  expect(destroyOldBoard).toHaveBeenCalledExactlyOnceWith();
+  expect(oldBoard.state.dom.destroyed).toBe(true);
+  expect(board().state.dom.destroyed).not.toBe(true);
+  expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("correct");
+  expect(generatePuzzle).toHaveBeenCalledExactlyOnceWith("synthetic-puzzles.db3");
+  expect(container.querySelector("output")?.textContent).toBe("correct,incomplete");
+  expect(tree.getState().root.fen).toBe(INITIAL_FEN);
+  expectLine(INITIAL_FEN, ["e2e4"]);
+  const nextBoard = board();
+  const destroyNextBoard = vi.spyOn(nextBoard, "destroy");
+  await play("e7", "e5");
+  expect(native).toHaveBeenCalledTimes(3);
+  expect(board()).not.toBe(nextBoard);
+  expect(destroyOldBoard).toHaveBeenCalledTimes(1);
+  expect(destroyNextBoard).toHaveBeenCalledExactlyOnceWith();
+  expect(nextBoard.state.dom.destroyed).toBe(true);
+  expect(board().state.dom.destroyed).not.toBe(true);
+  expect(changeCompletion).toHaveBeenCalledTimes(2);
+  expect(generatePuzzle).toHaveBeenCalledTimes(2);
+});
+
+it("retains an early mate with auto-next enabled but no database", async () => {
+  atoms.set(jumpToNextPuzzleAtom, true);
+  await mount(earlyMatePuzzle, null);
   await play("g5", "h6");
   expect(expectLine(matePuzzle.fen, ["h7h8", "g5h6"]).isCheckmate()).toBe(true);
   expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("correct");
   expect(generatePuzzle).not.toHaveBeenCalled();
 });
 
-it("does not change the existing earlier-than-final mate continuation policy", async () => {
-  const puzzle = { ...matePuzzle, moves: ["h7h8", "g5g4", "h8h7", "g4g7"] };
-  await mount(puzzle);
-  await play("g5", "h6");
-  // This existing behavior is deliberately outside the final-move fix's scope.
-  expectLine(puzzle.fen, puzzle.moves.slice(0, 3));
-  expect(changeCompletion).not.toHaveBeenCalled();
-  expect(generatePuzzle).not.toHaveBeenCalled();
-  expect(container.querySelector("output")?.textContent).toBe("incomplete");
-});
+it.each([
+  ["first", earlyMatePuzzle.moves, "g5", "h6", ["h7h8", "g5h6"]],
+  [
+    "later",
+    ["h7h8", "g5g4", "h8h7", "g4g5", "h7h8", "g5g7"],
+    "g4",
+    "h4",
+    ["h7h8", "g5g4", "h8h7", "g4h4"],
+  ],
+] as const)(
+  "completes a legal mate on the %s solver turn without inserting the canonical continuation",
+  async (_, moves, from, to, played) => {
+    const puzzle = { ...matePuzzle, moves: [...moves] };
+    const canonical = Chess.fromSetup(parseFen(puzzle.fen).unwrap()).unwrap();
+    for (const uci of moves) {
+      const move = parseUci(uci)!;
+      expect(canonical.isLegal(move)).toBe(true);
+      canonical.play(move);
+    }
+    expect(canonical.isCheckmate()).toBe(true);
+    await mount(puzzle);
+    expectLine(puzzle.fen, [moves[0]]);
+    expect(changeCompletion).not.toHaveBeenCalled();
+    if (from === "g4") {
+      await play("g5", "g4");
+    }
+    expectLine(puzzle.fen, moves.slice(0, from === "g4" ? 3 : 1));
+    expect(changeCompletion).not.toHaveBeenCalled();
+    await play(from, to);
+    expect(expectLine(puzzle.fen, [...played]).isCheckmate()).toBe(true);
+    expect(tree.getState().currentNode().children).toEqual([]);
+    expect(changeCompletion).toHaveBeenCalledExactlyOnceWith("correct");
+    expect(generatePuzzle).not.toHaveBeenCalled();
+    expect(container.querySelector("output")?.textContent).toBe("correct");
+    expect(puzzle.moves).toEqual(moves);
+  },
+);
