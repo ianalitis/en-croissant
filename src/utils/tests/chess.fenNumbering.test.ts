@@ -92,12 +92,29 @@ test("preserves original FEN clocks, mainline, annotations and variation numberi
         .toBe("23... Kg6! {Centralize.} ");
     expect.soft(getMoveText(main.children[0], exportOptions)).toBe("24. Kf3 ");
     const exported = getPGN(tree.root, { ...exportOptions, headers: tree.headers });
+    expect(exported.match(/^\[SetUp /gm)).toHaveLength(1);
+    expect(exported.match(/^\[FEN /gm)).toHaveLength(1);
     expect(exported).toContain('[SetUp "1"]');
     expect(exported).toContain(`[FEN "${fen}"]`);
     expect(exported).toContain("[%cal Gf7g6]Find king activity");
     expect.soft(exported).toContain("23... Kg6! {Centralize.}");
     expect.soft(exported).toMatch(/\(23\.\.\. Ke6 \{Alternative\.\}\s+24\. Kf3\)/);
     expect.soft(exported).toMatch(/\)\s+24\. Kf3 \*$/);
+});
+
+test.each([
+    ["standard root", INITIAL_FEN],
+    ["custom root", fen],
+])("%s owns setup tags without mutating imported metadata", (_, rootFen) => {
+    const tree = defaultTree(rootFen);
+    tree.headers.other = { SetUp: "0", FEN: "stale imported FEN", Study: "Original study" };
+    const originalHeaders = structuredClone(tree.headers);
+    const exported = getPGN(tree.root, { ...exportOptions, headers: tree.headers });
+
+    const setupTags = exported.match(/^\[(?:SetUp|FEN) .*$/gm) ?? [];
+    expect(setupTags).toEqual(rootFen === INITIAL_FEN ? [] : ['[SetUp "1"]', `[FEN "${rootFen}"]`]);
+    expect(exported).toContain('[Study "Original study"]');
+    expect(tree.headers).toEqual(originalHeaders);
 });
 
 test("nested variations retain their parent absolute ply and first-child order", async () => {

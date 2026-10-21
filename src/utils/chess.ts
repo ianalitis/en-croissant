@@ -232,6 +232,8 @@ export function headersToPGN(game: GameHeaders): string {
         headers += `[Variant "${game.variant}"]\n`;
     }
     for (const [key, value] of Object.entries(game.other ?? {})) {
+        // getPGN derives setup tags from the actual root position.
+        if (key === "SetUp" || key === "FEN") continue;
         headers += `[${key} "${value}"]\n`;
     }
     return headers;
