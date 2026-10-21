@@ -5,7 +5,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { commands } from "@/bindings";
-import { activeTabAtom, tabsAtom } from "@/state/atoms";
+import { activeTabAtom, showTabBarAtom, tabsAtom } from "@/state/atoms";
 import { createTreeStore } from "@/state/store/tree";
 import type { Tab } from "@/utils/tabs";
 import BoardsPage from "../BoardsPage";
@@ -60,6 +60,7 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   atoms = createStore();
+  atoms.set(showTabBarAtom, true);
   atoms.set(tabsAtom, [other, source]);
   atoms.set(activeTabAtom, other.value);
   for (const tab of [source, other]) {
@@ -128,6 +129,51 @@ it.each(["analysis", "new", "play"] as const)(
     expect(commands.abortGame).toHaveBeenCalledExactlyOnceWith(`${source.value}-game`);
   },
 );
+
+it("toggling the tab bar during a pending save keeps the close target and blocks competing closes", async () => {
+  await render();
+  const otherState = sessionStorage.getItem(other.value);
+  await middleClose(source.name);
+  const pending = Promise.withResolvers<Awaited<ReturnType<typeof commands.writeDbGame>>>();
+  vi.mocked(commands.writeDbGame).mockReturnValueOnce(pending.promise);
+  await saveAndClose();
+  const dialog = document.querySelector('[role="dialog"]');
+  expect(dialog).not.toBeNull();
+
+  await act(async () => atoms.set(showTabBarAtom, false));
+  expect(container.querySelector('[role="tab"]')).toBeNull();
+  expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+  await act(async () => {
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "1", ctrlKey: true, bubbles: true }),
+    );
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true }));
+  });
+  await saveAndClose();
+  await act(async () => atoms.set(showTabBarAtom, true));
+  await middleClose(other.name);
+  expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+  expect(atoms.get(activeTabAtom)).toBe(source.value);
+  expect(atoms.get(tabsAtom)).toEqual([other, source]);
+  expect(commands.writeDbGame).toHaveBeenCalledExactlyOnceWith(
+    "/games/b.db3",
+    2,
+    expect.stringContaining("Edits in source-b"),
+  );
+  expect(commands.killEngines).not.toHaveBeenCalled();
+  expect(commands.abortGame).not.toHaveBeenCalled();
+  expect(JSON.parse(sessionStorage.getItem(source.value)!).state.dirty).toBe(true);
+
+  await act(async () => atoms.set(showTabBarAtom, false));
+  await act(async () => pending.resolve({ status: "ok", data: null }));
+  expect(atoms.get(tabsAtom)).toEqual([other]);
+  expect(atoms.get(activeTabAtom)).toBe(other.value);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(commands.writeDbGame).toHaveBeenCalledTimes(1);
+  expect(commands.killEngines).toHaveBeenCalledExactlyOnceWith(source.value);
+  expect(commands.abortGame).toHaveBeenCalledExactlyOnceWith(`${source.value}-game`);
+  expect(sessionStorage.getItem(other.value)).toBe(otherState);
+});
 
 it("focus/unmount while saving cannot reopen the prompt on A or close either tab", async () => {
   await render();
