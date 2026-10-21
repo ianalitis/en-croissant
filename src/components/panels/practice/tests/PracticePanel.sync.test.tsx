@@ -197,12 +197,46 @@ it("synchronizes a matching existing deck once on normal mount without rewriting
   const root = tree.getState().root;
   const before = atoms.get(deckAtom);
   const persistedBefore = localStorage.getItem(storageKey);
-  expect(before.positions).toHaveLength(2);
+  expect(before.positions).toHaveLength(3);
   await mount();
   expect(tree.getState().root).toBe(root);
   expect(syncSpy).toHaveBeenCalledExactlyOnceWith(before.positions, root, "white", []);
   expect(atoms.get(deckAtom).positions).toEqual(before.positions);
   expect(localStorage.getItem(storageKey)).toBe(persistedBefore);
+  expect(deckWrites()).toHaveLength(0);
+  expectPreserved(before);
+});
+
+it("adds one unseen root to a persisted legacy deck once without changing surviving cards or logs", async () => {
+  const root = tree.getState().root;
+  atoms.set(deckAtom, (previous) => ({
+    positions: previous.positions.filter(({ fen }) => fen !== root.fen),
+    logs: previous.logs.filter(({ fen }) => fen !== root.fen),
+  }));
+  const before = structuredClone(atoms.get(deckAtom));
+  expect(before.positions).toHaveLength(2);
+  storageSpy.mockClear();
+  await mount();
+  const after = atoms.get(deckAtom);
+  expect(tree.getState().root).toBe(root);
+  expect(after.positions.map(({ answer }) => answer)).toEqual(["e4", "Nf3", "Bb5"]);
+  expect(after.positions[0]).toMatchObject({ fen: root.fen, card: { reps: 0, lapses: 0 } });
+  expect(after.positions.slice(1)).toEqual(before.positions);
+  expect(opening.getStats(after.positions).unseen).toBe(1);
+  expect(deckWrites()).toHaveLength(1);
+  expectPreserved(before);
+
+  await act(async () => renderer.unmount());
+  renderer = createRoot(container);
+  syncSpy.mockClear();
+  storageSpy.mockClear();
+  const persisted = localStorage.getItem(storageKey);
+  await mount();
+  expect(syncSpy).toHaveBeenCalledExactlyOnceWith(after.positions, root, "white", []);
+  expect(JSON.parse(JSON.stringify(atoms.get(deckAtom)))).toEqual(
+    JSON.parse(JSON.stringify(after)),
+  );
+  expect(localStorage.getItem(storageKey)).toBe(persisted);
   expect(deckWrites()).toHaveLength(0);
   expectPreserved(before);
 });
@@ -247,12 +281,12 @@ it("publishes setStart changes using the existing excluded-start semantics and p
   const survivingFen = getNodeAtPath(root, [0, 0, 0, 0]).fen;
   // Characterize the current helper boundary, not a request to include the start node.
   expect(opening.buildFromTree(root, "white", start).map(({ fen }) => fen)).toEqual([survivingFen]);
-  expect(before.positions.map(({ fen }) => fen)).toEqual([selectedFen, survivingFen]);
+  expect(before.positions.map(({ fen }) => fen)).toEqual([root.fen, selectedFen, survivingFen]);
   syncSpy.mockClear();
   storageSpy.mockClear();
   await act(async () => tree.getState().setStart(start));
   expect(tree.getState().root).toBe(root);
-  expect(atoms.get(deckAtom).positions).toEqual([before.positions[1]]);
+  expect(atoms.get(deckAtom).positions).toEqual([before.positions[2]]);
   expect(syncSpy).toHaveBeenCalledExactlyOnceWith(before.positions, root, "white", start);
   expect(deckWrites()).toHaveLength(1);
   expectPreserved(before);
@@ -260,7 +294,11 @@ it("publishes setStart changes using the existing excluded-start semantics and p
   const narrowed = atoms.get(deckAtom);
   await act(async () => tree.getState().setStart([]));
   expect(tree.getState().root).toBe(root);
-  expect(atoms.get(deckAtom).positions.map(({ fen }) => fen)).toEqual([selectedFen, survivingFen]);
+  expect(atoms.get(deckAtom).positions.map(({ fen }) => fen)).toEqual([
+    root.fen,
+    selectedFen,
+    survivingFen,
+  ]);
   expect(syncSpy).toHaveBeenCalledTimes(2);
   expect(deckWrites()).toHaveLength(2);
   expectPreserved(narrowed);
@@ -271,7 +309,7 @@ it("preserves historical logs when a start change empties the deck and restoring
   const root = tree.getState().root;
   const before = atoms.get(deckAtom);
   const start = [0, 0, 0, 0];
-  expect(before.logs).toHaveLength(2);
+  expect(before.logs).toHaveLength(3);
   expect(opening.buildFromTree(root, "white", start)).toEqual([]);
   syncSpy.mockClear();
   storageSpy.mockClear();
@@ -359,6 +397,20 @@ async function advance(milliseconds: number) {
   await act(async () => vi.advanceTimersByTime(milliseconds));
 }
 
+it("keeps goToNext locked at a nonempty practice path until practice navigation is released", () => {
+  const path = [0, 0];
+  tree.getState().goToMove(path);
+  tree.getState().setPracticePath(path);
+  const fen = tree.getState().currentNode().fen;
+  expect(tree.getState().currentNode().children[0].san).toBe("Nf3");
+  tree.getState().goToNext();
+  expect(tree.getState().position).toEqual(path);
+  expect(tree.getState().currentNode().fen).toBe(fen);
+  tree.getState().setPracticePath(null);
+  tree.getState().goToNext();
+  expect(tree.getState().position).toEqual([0, 0, 0]);
+});
+
 // Board is not mounted. Seed exactly its selection fields, using the real tree move
 // action for correct answers. Rating buttons, hotkeys and timers are not mocked.
 async function selectPosition(phase: PracticeState["phase"], positionIndex = 0) {
@@ -419,30 +471,30 @@ it("stops a correct selection before publishing an orientation replacement and i
   await mount();
   const before = structuredClone(atoms.get(deckAtom));
   await selectPosition("correct");
-  expect(atoms.get(practiceStateAtom).answer).toBe("Nf3");
+  expect(atoms.get(practiceStateAtom).answer).toBe("e4");
   const publications: ReturnType<typeof stoppedSnapshot>[] = [];
   const unsubscribe = atoms.sub(deckAtom, () => publications.push(stoppedSnapshot()));
   await flipOrientation();
   unsubscribe();
   expect(atoms.get(deckAtom).positions[0].answer).toBe("e5");
   await pressKey("3", "Digit3");
-  // The rejected candidate appends a review of Black's e5 for White's Nf3.
+  // The rejected candidate appends a review of Black's e5 for White's e4.
   expectPreserved(before);
   expect(publications).toEqual([stopped]);
   expect(stoppedSnapshot()).toEqual(stopped);
   expect(container.textContent).not.toContain("Board.Practice.HowDifficult");
 });
 
-it("stops a correct selection before a start change shifts index one to zero", async () => {
+it("stops a correct selection before a start change shifts index two to zero", async () => {
   await mount();
   const before = structuredClone(atoms.get(deckAtom));
-  await selectPosition("correct", 1);
+  await selectPosition("correct", 2);
   expect(atoms.get(practiceStateAtom).answer).toBe("Bb5");
   const publications: ReturnType<typeof stoppedSnapshot>[] = [];
   const unsubscribe = atoms.sub(deckAtom, () => publications.push(stoppedSnapshot()));
   await act(async () => tree.getState().setStart([0, 0]));
   unsubscribe();
-  expect(atoms.get(deckAtom).positions).toEqual([before.positions[1]]);
+  expect(atoms.get(deckAtom).positions).toEqual([before.positions[2]]);
   expect(publications).toEqual([stopped]);
   await pressKey("3", "Digit3");
   expectPreserved(before);
@@ -467,7 +519,7 @@ it("cancels pending full-mode advance and clears the entire remaining queue", as
   await mount();
   const before = structuredClone(atoms.get(deckAtom));
   await clickButton("Board.Practice.PracticeFullRepertoire");
-  expect(atoms.get(practiceSessionStatsAtom).remainingPositions).toEqual([0, 1]);
+  expect(atoms.get(practiceSessionStatsAtom).remainingPositions).toEqual([0, 1, 2]);
   await selectPosition("correct");
   await advance(299);
   await flipOrientation();
@@ -578,7 +630,7 @@ it("does not stop for a root-only change caused by a real correct move", async (
     answer: "d4",
     positionIndex: 0,
   });
-  expect(tree.getState().practicePath).toEqual([0, 0]);
+  expect(tree.getState().practicePath).toEqual([]);
   await clickButton("Board.Practice.Good");
   expect(atoms.get(deckAtom).logs).toHaveLength(before.logs.length + 1);
   expect(atoms.get(deckAtom).logs.at(-1)).toMatchObject({
@@ -629,11 +681,13 @@ it("preserves the existing Stop button semantics without resetting deck history"
 });
 
 it("stops for an effective start change even when deck membership is unchanged", async () => {
+  tree.getState().setStart([0, 0]);
+  seedDeck();
   await mount();
   const before = structuredClone(atoms.get(deckAtom));
   await selectPosition("correct");
   storageSpy.mockClear();
-  await act(async () => tree.getState().setStart([0]));
+  await act(async () => tree.getState().setStart([0, 0, 1]));
   expect(atoms.get(deckAtom)).toEqual(before);
   expect(deckWrites()).toHaveLength(0);
   expect(stoppedSnapshot()).toEqual(stopped);
