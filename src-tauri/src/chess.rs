@@ -881,7 +881,7 @@ fn is_material_sacrifice(previous: &Chess, current: &Chess, budget: &mut Evaluat
     i64::from(previous_eval) + i64::from(current_eval) > 100
 }
 
-// Keep the original numerical regression assertions on the production algorithm.
+// Exercise the production algorithm with the default operational budget.
 #[cfg(test)]
 fn qsearch(position: &Chess, alpha: i32, beta: i32) -> i32 {
     qsearch_complete(position, alpha, beta, &mut EvaluationBudget::default(), 0)
@@ -904,6 +904,15 @@ mod tests {
         Chess::from_setup(fen.into_setup(), CastlingMode::Chess960).unwrap()
     }
 
+    fn after_line(position: &Chess, moves: &[&str]) -> Chess {
+        let mut child = position.clone();
+        for uci in moves {
+            let mv = uci.parse::<UciMove>().unwrap().to_move(&child).unwrap();
+            child.play_unchecked(&mv);
+        }
+        child
+    }
+
     #[test]
     fn eval_start_pos() {
         assert_eq!(naive_eval(&Chess::default()), 0);
@@ -918,43 +927,68 @@ mod tests {
     #[test]
     fn eval_hanging_pawn() {
         let position = pos("r1bqkbnr/ppp1pppp/2n5/1B1p4/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3");
-        assert_eq!(naive_eval(&position), 100);
+        // ...dxe4 wins one pawn, valued at 90 rather than 100.
+        let child = after_line(&position, &["d5e4"]);
+        assert_eq!(count_material(&child), -90);
+        assert_eq!(naive_eval(&position), 90);
     }
 
     #[test]
     fn eval_complex_center() {
         let position = pos("r1bqkbnr/ppp2ppp/2n5/1B1pp3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4");
-        assert_eq!(naive_eval(&position), 100);
+        // Bxc6+ bxc6 Nxe5 leaves White a pawn ahead.
+        let child = after_line(&position, &["b5c6", "b7c6", "f3e5"]);
+        assert_eq!(count_material(&child), -90);
+        assert_eq!(naive_eval(&position), 90);
     }
 
     #[test]
     fn eval_in_check() {
         let position = pos("r1bqkbnr/ppp2ppp/2B5/3pp3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 4");
-        assert_eq!(naive_eval(&position), -100);
+        let child = after_line(&position, &["b7c6", "f3e5"]);
+        assert_eq!(count_material(&child), -90);
+        assert_eq!(naive_eval(&position), -90);
     }
 
     #[test]
     fn eval_rook_stack() {
         let position = pos("rnrq4/8/8/1R6/1R6/1R5K/1Q6/7k w - - 0 1");
-        assert_eq!(naive_eval(&position), 500);
+        // Qb1+ Rc1 Qxc1+ Qd1 Qxd1#. Checked nodes must search blocks,
+        // not stand pat at a material score. This is one legal mating line.
+        let child = after_line(&position, &["b2b1", "c8c1", "b1c1", "d8d1", "c1d1"]);
+        assert!(child.is_checkmate());
+        assert_eq!(naive_eval(&position), 10000);
     }
 
     #[test]
     fn eval_rook_stack2() {
         let position = pos("rnrq4/8/8/1R6/1Q6/1R5K/1R6/7k w - - 0 1");
-        assert_eq!(naive_eval(&position), 200);
+        // The same line mates with Rb1+ instead of Qb1+.
+        let child = after_line(&position, &["b2b1", "c8c1", "b1c1", "d8d1", "c1d1"]);
+        assert!(child.is_checkmate());
+        assert_eq!(naive_eval(&position), 10000);
     }
 
     #[test]
     fn eval_opera_game1() {
         let position = pos("4kb1r/p2rqppp/5n2/1B2p1B1/4P3/1Q6/PPP2PPP/2K4R w k - 0 14");
-        assert_eq!(naive_eval(&position), -100);
+        // Bxd7+ Qxd7: White has two extra pawns against a knight.
+        let expected = 2 * 90 - 300;
+        let child = after_line(&position, &["b5d7", "e7d7"]);
+        assert_eq!(count_material(&child), expected);
+        assert_eq!(naive_eval(&position), expected);
     }
 
     #[test]
     fn eval_opera_game2() {
         let position = pos("4kb1r/p2rqppp/5n2/1B2p1B1/4P3/1Q6/PPP2PPP/2KR4 b k - 1 14");
-        assert_eq!(naive_eval(&position), 0);
+        // ...Qb4 Qxb4 Bxb4 Bxf6: Black has an extra rook against a
+        // bishop and two pawns. This is a restricted-search material score,
+        // not a claim that the Opera Game is equal under full engine search.
+        let expected = 500 - 300 - 2 * 90;
+        let child = after_line(&position, &["e7b4", "b3b4", "f8b4", "g5f6"]);
+        assert_eq!(count_material(&child), expected);
+        assert_eq!(naive_eval(&position), expected);
     }
 }
 
