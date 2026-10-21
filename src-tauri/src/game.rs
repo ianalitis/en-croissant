@@ -192,6 +192,36 @@ struct GameController {
 }
 
 impl GameController {
+    async fn init_engine(
+        &mut self,
+        color: Color,
+        castling_mode: CastlingMode,
+    ) -> Result<(), Error> {
+        let player = match color {
+            Color::White => &self.config.white,
+            Color::Black => &self.config.black,
+        };
+        if let PlayerConfig::Engine { path, options, .. } = player {
+            let mut engine = BaseEngine::spawn(PathBuf::from(path)).await?;
+            engine.init_uci().await?;
+            let normalized = engine.normalize_conditioning(options)?;
+            for opt in normalized.as_ref().unwrap_or(options) {
+                if opt.name != "UCI_Chess960" {
+                    engine.set_option(&opt.name, &opt.value).await?;
+                }
+            }
+            engine
+                .set_option("UCI_Chess960", castling_mode.is_chess960())
+                .await?;
+            let slot = match color {
+                Color::White => &mut self.white_engine,
+                Color::Black => &mut self.black_engine,
+            };
+            *slot = Some(Arc::new(Mutex::new(engine)));
+        }
+        Ok(())
+    }
+
     fn new(game_id: GameId, config: GameConfig) -> Result<Self, Error> {
         let initial_fen = config.initial_fen.clone().unwrap_or_else(|| {
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()
@@ -626,39 +656,8 @@ impl GameManager {
         controller.polyglot_book = polyglot_book;
         controller.polyglot_max_ply = polyglot_max_ply;
 
-        if let PlayerConfig::Engine { path, options, .. } = &config.white {
-            let mut engine = BaseEngine::spawn(PathBuf::from(path)).await?;
-            engine.init_uci().await?;
-            for opt in options {
-                if opt.name == "UCI_Chess960" {
-                    continue;
-                }
-                engine.set_option(&opt.name, &opt.value).await?;
-            }
-            if castling_mode.is_chess960() {
-                engine.set_option("UCI_Chess960", "true").await?;
-            } else {
-                engine.set_option("UCI_Chess960", "false").await?;
-            }
-            controller.white_engine = Some(Arc::new(Mutex::new(engine)));
-        }
-
-        if let PlayerConfig::Engine { path, options, .. } = &config.black {
-            let mut engine = BaseEngine::spawn(PathBuf::from(path)).await?;
-            engine.init_uci().await?;
-            for opt in options {
-                if opt.name == "UCI_Chess960" {
-                    continue;
-                }
-                engine.set_option(&opt.name, &opt.value).await?;
-            }
-            if castling_mode.is_chess960() {
-                engine.set_option("UCI_Chess960", "true").await?;
-            } else {
-                engine.set_option("UCI_Chess960", "false").await?;
-            }
-            controller.black_engine = Some(Arc::new(Mutex::new(engine)));
-        }
+        controller.init_engine(Color::White, castling_mode).await?;
+        controller.init_engine(Color::Black, castling_mode).await?;
 
         controller.reset_clock();
 
@@ -1592,4 +1591,208 @@ pub async fn get_game_engine_logs(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<EngineLog>, Error> {
     state.game_manager.get_engine_logs(&game_id, &color).await
+}
+
+#[cfg(all(test, unix))]
+mod maia_conditioning_tests {
+    use super::*;
+    use crate::engine::maia_conditioning_tests::{opts, Fixture, SIGNATURE, WATCHDOG};
+    use tokio::time::timeout;
+
+    fn player(fixture: &Fixture, pairs: &[(&str, &str)]) -> PlayerConfig {
+        PlayerConfig::Engine {
+            name: "Not the actual engine identity".into(),
+            path: fixture.path.to_string_lossy().into_owned(),
+            options: opts(pairs),
+            go: Some(GoMode::Depth(1)),
+        }
+    }
+
+    fn controller(white: PlayerConfig, black: PlayerConfig) -> GameController {
+        GameController::new(
+            "maia-conditioning".into(),
+            GameConfig {
+                white,
+                black,
+                white_time_control: None,
+                black_time_control: None,
+                initial_fen: None,
+                initial_moves: vec![],
+                opening_book: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn maia_conditioning_game_both_slots_all_permutations_and_chess960() {
+        let values = [("Elo", "1800"), ("SelfElo", "2100"), ("OppoElo", "2200")];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let white = Fixture::new(SIGNATURE);
+            let black = Fixture::new(SIGNATURE);
+            let mut pairs = vec![("Hash", "16")];
+            pairs.extend(order.map(|i| values[i]));
+            pairs.extend([("MultiPV", "3"), ("UCI_Chess960", "false")]);
+            let mut game = controller(player(&white, &pairs), player(&black, &pairs));
+            timeout(WATCHDOG, async {
+                // The two calls used by start_game, without launching the app or loop.
+                game.init_engine(Color::White, CastlingMode::Chess960)
+                    .await
+                    .unwrap();
+                game.init_engine(Color::Black, CastlingMode::Chess960)
+                    .await
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+            for (fixture, slot) in [(&white, &game.white_engine), (&black, &game.black_engine)] {
+                let mut engine = slot
+                    .as_ref()
+                    .expect("actual game slot must be initialized")
+                    .lock()
+                    .await;
+                fixture.sync(&mut engine).await;
+                assert_eq!(fixture.state(), "2100,2200", "{order:?}");
+                assert_eq!(
+                    fixture.commands(),
+                    [
+                        "setoption name Hash value 16",
+                        "setoption name MultiPV value 3",
+                        "setoption name SelfElo value 2100",
+                        "setoption name OppoElo value 2200",
+                        "setoption name UCI_Chess960 value true"
+                    ]
+                );
+                engine.terminate_report().await.unwrap();
+                fixture.assert_reaped();
+            }
+            for config in [&game.config.white, &game.config.black] {
+                let PlayerConfig::Engine { options, .. } = config else {
+                    panic!("engine config lost")
+                };
+                assert_eq!(*options, opts(&pairs), "raw game config must not change");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn maia_conditioning_game_one_sided_overrides_in_both_colors() {
+        let white = Fixture::new(SIGNATURE);
+        let black = Fixture::new(SIGNATURE);
+        let mut game = controller(
+            player(&white, &[("selfelo", "2100"), ("eLO", "1800")]),
+            player(&black, &[("OPPOELO", "2300"), ("Elo", "1700")]),
+        );
+        timeout(WATCHDOG, async {
+            game.init_engine(Color::White, CastlingMode::Standard)
+                .await
+                .unwrap();
+            game.init_engine(Color::Black, CastlingMode::Standard)
+                .await
+                .unwrap();
+        })
+        .await
+        .unwrap();
+        for (fixture, slot, self_elo, oppo_elo) in [
+            (&white, &game.white_engine, "2100", "1800"),
+            (&black, &game.black_engine, "1700", "2300"),
+        ] {
+            let mut engine = slot.as_ref().unwrap().lock().await;
+            fixture.sync(&mut engine).await;
+            assert_eq!(fixture.state(), format!("{self_elo},{oppo_elo}"));
+            assert_eq!(
+                fixture.commands(),
+                [
+                    format!("setoption name SelfElo value {self_elo}"),
+                    format!("setoption name OppoElo value {oppo_elo}"),
+                    "setoption name UCI_Chess960 value false".into()
+                ]
+            );
+            engine.terminate_report().await.unwrap();
+            fixture.assert_reaped();
+        }
+    }
+
+    #[tokio::test]
+    async fn maia_conditioning_game_invalid_values_leave_both_slots_uninitialized() {
+        for color in [Color::White, Color::Black] {
+            let fixture = Fixture::new(SIGNATURE);
+            let invalid = player(&fixture, &[("Hash", "16"), ("Elo", "bad"), ("Elo", "1800")]);
+            let human = PlayerConfig::Human {
+                name: "Human".into(),
+            };
+            let mut game = match color {
+                Color::White => controller(invalid, human),
+                Color::Black => controller(human, invalid),
+            };
+            let result = timeout(WATCHDOG, game.init_engine(color, CastlingMode::Chess960))
+                .await
+                .unwrap();
+            assert!(
+                matches!(result, Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::InvalidInput)
+            );
+            assert!(game.white_engine.is_none() && game.black_engine.is_none());
+            // Error drops the BaseEngine via the unchanged shared lifecycle. The
+            // test explicitly collects that exact child, not a production reap claim.
+            fixture.reap_after_drop().await;
+            assert!(
+                fixture.commands().is_empty(),
+                "not even UCI_Chess960 may be sent"
+            );
+            assert_eq!(fixture.state(), "1200,1300");
+        }
+    }
+
+    #[tokio::test]
+    async fn maia_conditioning_game_profile_name_cannot_specialize_unrelated_engine() {
+        let white = Fixture::new(&SIGNATURE.replace("Maia3", "UnrelatedEngine"));
+        let black = Fixture::new(&SIGNATURE.replace("Maia3", "UnrelatedEngine"));
+        let mut config = player(
+            &white,
+            &[("SelfElo", "2100"), ("Elo", "1800"), ("Hash", "16")],
+        );
+        if let PlayerConfig::Engine { name, .. } = &mut config {
+            *name = "Maia3".into();
+        }
+        let mut game = controller(
+            config,
+            player(
+                &black,
+                &[("SelfElo", "2100"), ("Elo", "1800"), ("Hash", "16")],
+            ),
+        );
+        timeout(WATCHDOG, async {
+            game.init_engine(Color::White, CastlingMode::Standard)
+                .await
+                .unwrap();
+            game.init_engine(Color::Black, CastlingMode::Standard)
+                .await
+                .unwrap();
+        })
+        .await
+        .unwrap();
+        for (fixture, slot) in [(&white, &game.white_engine), (&black, &game.black_engine)] {
+            let mut engine = slot.as_ref().unwrap().lock().await;
+            fixture.sync(&mut engine).await;
+            assert_eq!(fixture.state(), "1800,1800");
+            assert_eq!(
+                fixture.commands(),
+                [
+                    "setoption name SelfElo value 2100",
+                    "setoption name Elo value 1800",
+                    "setoption name Hash value 16",
+                    "setoption name UCI_Chess960 value false"
+                ]
+            );
+            engine.terminate_report().await.unwrap();
+            fixture.assert_reaped();
+        }
+    }
 }

@@ -52,6 +52,7 @@ pub struct EngineProcess {
     last_best_moves: Vec<BestMoves>,
     last_progress: f32,
     options: EngineOptions,
+    emitted_options: Option<Vec<EngineOption>>,
     go_mode: GoMode,
     running: bool,
     real_multipv: u16,
@@ -75,6 +76,7 @@ impl EngineProcess {
             last_best_moves: Vec::new(),
             last_progress: 0.0,
             options: EngineOptions::default(),
+            emitted_options: None,
             real_multipv: 0,
             go_mode: GoMode::Infinite,
             running: false,
@@ -90,11 +92,16 @@ impl EngineProcess {
     }
 
     async fn set_options(&mut self, options: EngineOptions) -> Result<(), Error> {
+        let normalized = self.base.normalize_conditioning(&options.extra_options)?;
         let fen_changed = options.fen != self.options.fen;
         let fen: Fen = options.fen.parse()?;
         let setup = fen.as_setup();
         let castling_mode = CastlingMode::detect(setup);
         let pos = parse_fen_and_apply_moves(&options.fen, &options.moves)?;
+
+        // A partial write must not leave a trusted effective-options cache.
+        // Keep the raw request separately for get_best_moves' equality fast path.
+        let previous_emitted = self.emitted_options.take();
 
         if fen_changed {
             if castling_mode.is_chess960() {
@@ -113,8 +120,17 @@ impl EngineProcess {
 
         self.real_multipv = multipv.min(pos.legal_moves().len() as u16);
 
-        for option in &options.extra_options {
-            if !self.options.extra_options.contains(option) && option.name != "UCI_Chess960" {
+        let effective = normalized.as_ref().unwrap_or(&options.extra_options);
+        for option in effective {
+            let unchanged = if normalized.is_some() {
+                previous_emitted
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(option)
+            } else {
+                self.options.extra_options.contains(option)
+            };
+            if !unchanged && option.name != "UCI_Chess960" {
                 self.set_option(&option.name, &option.value).await?;
             }
         }
@@ -124,6 +140,7 @@ impl EngineProcess {
         }
         self.last_depth = 0;
         self.options = options.clone();
+        self.emitted_options = normalized;
         self.best_moves.clear();
         self.last_best_moves.clear();
         Ok(())
