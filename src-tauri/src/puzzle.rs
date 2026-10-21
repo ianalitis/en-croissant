@@ -10,10 +10,14 @@ use crate::{
     error::Error,
 };
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug)]
 struct PuzzleCache {
     cache: VecDeque<Puzzle>,
     counter: usize,
+    file: String,
     min_rating: u16,
     max_rating: u16,
     theme: Option<String>,
@@ -24,6 +28,7 @@ impl PuzzleCache {
         Self {
             cache: VecDeque::new(),
             counter: 0,
+            file: String::new(),
             min_rating: 0,
             max_rating: 0,
             theme: None,
@@ -37,11 +42,11 @@ impl PuzzleCache {
         max_rating: u16,
         theme: &Option<String>,
     ) -> Result<(), Error> {
-        if self.cache.is_empty()
+        if self.file != file
             || self.min_rating != min_rating
             || self.max_rating != max_rating
             || self.theme != *theme
-            || self.counter >= 20
+            || self.counter >= self.cache.len()
         {
             self.cache.clear();
             self.counter = 0;
@@ -68,6 +73,7 @@ impl PuzzleCache {
             };
 
             self.cache = new_puzzles.into_iter().collect();
+            self.file = file.to_owned();
             self.min_rating = min_rating;
             self.max_rating = max_rating;
             self.theme = theme.clone();
