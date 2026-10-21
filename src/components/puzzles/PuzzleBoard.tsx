@@ -101,7 +101,11 @@ function PuzzleBoard({
           return;
         }
       }
-      const newMoves = puzzle.moves.slice(currentMove, currentMove + 2);
+      // Retain the played final move, including an alternative checkmate or promotion.
+      const newMoves =
+        currentMove === puzzle.moves.length - 1
+          ? [uci]
+          : puzzle.moves.slice(currentMove, currentMove + 2);
       makeMoves({
         payload: newMoves,
         mainline: true,

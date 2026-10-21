@@ -70,6 +70,7 @@ function Puzzles({ id }: { id: string }) {
   const makeMove = useStore(store, (s) => s.makeMove);
   const setShapes = useStore(store, (s) => s.setShapes);
   const currentMove = useStore(store, (s) => s.currentNode().move);
+  const currentFen = useStore(store, (s) => s.currentNode().fen);
   const [puzzles, setPuzzles] = useSessionStorage<Puzzle[]>({
     key: `${id}-puzzles`,
     defaultValue: [],
@@ -267,7 +268,7 @@ function Puzzles({ id }: { id: string }) {
       : null;
 
   const currentlyOnLastMoveOrNoLastMove = (): boolean => {
-    if (!currentMove) return true;
+    if (!currentMove || positionFromFen(currentFen)[0]?.isEnd()) return true;
 
     const moves = puzzles[currentPuzzle]?.moves;
     if (!moves) return true;
