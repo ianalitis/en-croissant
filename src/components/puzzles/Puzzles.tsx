@@ -610,24 +610,28 @@ function Puzzles({ id }: { id: string }) {
                 const to = makeSquare(nextMove.to);
                 const currentShapes = store.getState().currentNode().shapes;
 
-                // Progressive hints: circle > arrow > clear
+                // Progressive hints: circle > arrow > clear. setShapes toggles one shape.
                 const hasCircle = currentShapes.some((s) => s.orig === from && !s.dest);
                 const hasArrow = currentShapes.some((s) => s.orig === from && s.dest === to);
 
                 if (hasArrow) {
                   // Third click: Remove all hint shapes for this move
-                  setShapes(
-                    currentShapes.filter((s) => !(s.orig === from && (!s.dest || s.dest === to))),
-                  );
+                  for (const shape of currentShapes) {
+                    if (shape.orig === from && (!shape.dest || shape.dest === to)) {
+                      setShapes([shape]);
+                    }
+                  }
                 } else if (hasCircle) {
                   // Second click: Replace circle with arrow
-                  setShapes([
-                    ...currentShapes.filter((s) => !(s.orig === from && !s.dest)),
-                    { orig: from, dest: to, brush: "green" },
-                  ]);
+                  for (const shape of currentShapes) {
+                    if (shape.orig === from && !shape.dest) {
+                      setShapes([shape]);
+                    }
+                  }
+                  setShapes([{ orig: from, dest: to, brush: "green" }]);
                 } else {
                   // First click: Add circle
-                  setShapes([...currentShapes, { orig: from, dest: undefined, brush: "green" }]);
+                  setShapes([{ orig: from, brush: "green" }]);
                 }
               }}
               disabled={

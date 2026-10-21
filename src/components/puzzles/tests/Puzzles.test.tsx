@@ -1,4 +1,5 @@
 import { Chessground as NativeChessground } from "@lichess-org/chessground";
+import type { DrawShape } from "@lichess-org/chessground/draw";
 import type { Key } from "@lichess-org/chessground/types";
 import { MantineProvider } from "@mantine/core";
 import { Chess, makeUci, parseUci } from "chessops";
@@ -176,6 +177,77 @@ function hint() {
 function savedPuzzle(): Puzzle {
   return JSON.parse(sessionStorage.getItem("puzzle-parent-test-puzzles")!)[0];
 }
+
+it.each([false, true])(
+  "cycles hints circle > arrow > clear > circle with unrelated drawings: %s",
+  async (withDrawings) => {
+    await mount();
+    const unrelated: DrawShape[] = withDrawings
+      ? [
+          { orig: "a1", brush: "red" },
+          { orig: "g5", dest: "g4", brush: "blue" },
+        ]
+      : [];
+    for (const shape of unrelated) {
+      await act(async () => board().state.drawable.onChange!([shape]));
+    }
+    expect(tree.getState().currentNode().shapes).toEqual(unrelated);
+    expect(board().state.drawable.autoShapes).toEqual(unrelated);
+    const fen = tree.getState().currentNode().fen;
+    const path = [...tree.getState().position];
+    expect(savedPuzzle().completion).toBe("incomplete");
+    const hints: DrawShape[][] = [
+      [{ orig: "g5", brush: "green" }],
+      [{ orig: "g5", dest: "g7", brush: "green" }],
+      [],
+      [{ orig: "g5", brush: "green" }],
+    ];
+    for (const [index, shapes] of hints.entries()) {
+      await act(async () => hint().click());
+      expect
+        .soft(tree.getState().currentNode().shapes, `store click ${index + 1}`)
+        .toEqual([...unrelated, ...shapes]);
+      expect
+        .soft(board().state.drawable.autoShapes, `native click ${index + 1}`)
+        .toEqual([...unrelated, ...shapes]);
+      expect(tree.getState().currentNode().fen).toBe(fen);
+      expect(board().getFen()).toBe(fen.split(" ")[0]);
+      expect(tree.getState().position).toEqual(path);
+      expect(savedPuzzle().completion).toBe("incorrect");
+      expect(hint().disabled).toBe(false);
+    }
+  },
+);
+
+it.each(["circle", "arrow", "both"] as const)(
+  "matches an existing %s hint by endpoints regardless of brush",
+  async (kind) => {
+    await mount({ ...matePuzzle, completion: "incorrect" });
+    const unrelated: DrawShape[] = [
+      { orig: "a1", brush: "red" },
+      { orig: "g5", dest: "g4", brush: "blue" },
+    ];
+    const matching: DrawShape[] = [];
+    if (kind !== "arrow") matching.push({ orig: "g5", brush: "yellow" });
+    if (kind !== "circle") matching.push({ orig: "g5", dest: "g7", brush: "red" });
+    for (const shape of [...unrelated, ...matching]) {
+      await act(async () => board().state.drawable.onChange!([shape]));
+    }
+    expect(tree.getState().currentNode().shapes).toEqual([...unrelated, ...matching]);
+    expect(board().state.drawable.autoShapes).toEqual([...unrelated, ...matching]);
+    const fen = tree.getState().currentNode().fen;
+    const path = [...tree.getState().position];
+    await act(async () => hint().click());
+    const expected: DrawShape[] =
+      kind === "circle" ? [...unrelated, { orig: "g5", dest: "g7", brush: "green" }] : unrelated;
+    expect.soft(tree.getState().currentNode().shapes).toEqual(expected);
+    expect.soft(board().state.drawable.autoShapes).toEqual(expected);
+    expect(tree.getState().currentNode().fen).toBe(fen);
+    expect(board().getFen()).toBe(fen.split(" ")[0]);
+    expect(tree.getState().position).toEqual(path);
+    expect(savedPuzzle().completion).toBe("incorrect");
+  },
+);
 
 it.each([
   ["canonical", "g7", "g5g7", false],
