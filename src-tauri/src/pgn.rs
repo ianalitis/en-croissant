@@ -277,3 +277,165 @@ pub async fn write_game(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::lex_pgn;
+    use serde_json::{json, Value};
+    use shakmaty::{fen::Fen, Color};
+    use tauri::{
+        test::{mock_builder, mock_context, noop_assets, MockRuntime},
+        Manager,
+    };
+
+    // A simple original mechanics study, not a training-strength benchmark.
+    const STUDY: &str = include_str!("../../src/tests/fixtures/rook-capture.pgn");
+    const ANNOTATION: &str = "Take the undefended rook.";
+    const REVISED_ANNOTATION: &str = "The e-pawn captures the undefended rook on d5.";
+
+    fn mock_app() -> tauri::App<MockRuntime> {
+        mock_builder()
+            .manage(AppState::default())
+            .build(mock_context(noop_assets()))
+            .unwrap()
+    }
+
+    fn expected_study_tokens(annotation: &str) -> Value {
+        json!([
+            {"type": "Header", "value": {"tag": "Event", "value": "Original capture study"}},
+            {"type": "Header", "value": {"tag": "Result", "value": "*"}},
+            {"type": "Header", "value": {"tag": "SetUp", "value": "1"}},
+            {"type": "Header", "value": {"tag": "FEN", "value": "7k/7p/8/3r4/4P3/8/7P/K7 w - - 4 23"}},
+            {"type": "San", "value": "exd5"},
+            {"type": "Nag", "value": "$1"},
+            {"type": "Comment", "value": annotation},
+            {"type": "ParenOpen"},
+            {"type": "San", "value": "h3"},
+            {"type": "Nag", "value": "$2"},
+            {"type": "Comment", "value": "Misses the capture."},
+            {"type": "San", "value": "Rd4"},
+            {"type": "ParenClose"},
+            {"type": "San", "value": "Kg7"},
+            {"type": "San", "value": "h3"},
+            {"type": "Outcome", "value": "*"}
+        ])
+    }
+
+    #[tokio::test]
+    async fn annotated_study_survives_native_save_export_and_reopen() {
+        let app = mock_app();
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("study.pgn");
+        let exported = directory.path().join("exported.pgn");
+        std::fs::write(&source, STUDY).unwrap();
+
+        assert_eq!(
+            count_pgn_games(source.clone(), app.state()).await.unwrap(),
+            1
+        );
+        let imported = read_games(source.clone(), 0, 0, app.state()).await.unwrap();
+        assert_eq!(imported, [STUDY]);
+        let tokens = serde_json::to_value(lex_pgn(imported[0].clone()).await.unwrap()).unwrap();
+        assert_eq!(tokens, expected_study_tokens(ANNOTATION));
+        let setup = tokens[3]["value"]["value"]
+            .as_str()
+            .unwrap()
+            .parse::<Fen>()
+            .unwrap()
+            .into_setup();
+        assert_eq!(setup.turn, Color::White);
+        assert_eq!(setup.halfmoves, 4);
+        assert_eq!(setup.fullmoves.get(), 23);
+
+        let revised = imported[0].replace(ANNOTATION, REVISED_ANNOTATION);
+        write_game(
+            source.to_string_lossy().into_owned(),
+            0,
+            revised.clone(),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count_pgn_games(source.clone(), app.state()).await.unwrap(),
+            1
+        );
+        let saved = read_games(source.clone(), 0, 0, app.state()).await.unwrap();
+        assert_eq!(saved, [revised]);
+        let saved_tokens = serde_json::to_value(lex_pgn(saved[0].clone()).await.unwrap()).unwrap();
+        assert_eq!(saved_tokens, expected_study_tokens(REVISED_ANNOTATION));
+
+        // Export through the same native writer into a previously absent path.
+        assert!(!exported.exists());
+        write_game(
+            exported.to_string_lossy().into_owned(),
+            0,
+            saved[0].clone(),
+            app.state(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count_pgn_games(exported.clone(), app.state())
+                .await
+                .unwrap(),
+            1
+        );
+        let reopened = read_games(exported, 0, 0, app.state()).await.unwrap();
+        assert_eq!(reopened, saved);
+        assert_eq!(
+            serde_json::to_value(lex_pgn(reopened[0].clone()).await.unwrap()).unwrap(),
+            saved_tokens
+        );
+        assert_eq!(std::fs::read_to_string(source).unwrap(), saved[0]);
+    }
+
+    #[tokio::test]
+    async fn replacing_middle_study_preserves_both_sentinel_games() {
+        let app = mock_app();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("collection.pgn");
+        let before =
+            "[Event \"Before sentinel\"]\n[Result \"1-0\"]\n\n1. e4 {Keep before.} e5 1-0\n\n";
+        let after =
+            "[Event \"After sentinel\"]\n[Result \"0-1\"]\n\n1. d4 $6 d5 {Keep after.} 0-1\n\n";
+        std::fs::write(&path, format!("{before}{STUDY}{after}")).unwrap();
+        assert_eq!(count_pgn_games(path.clone(), app.state()).await.unwrap(), 3);
+        let original = read_games(path.clone(), 0, 2, app.state()).await.unwrap();
+        assert_eq!(original, [before, STUDY, after]);
+        assert_eq!(
+            serde_json::to_value(lex_pgn(original[1].clone()).await.unwrap()).unwrap(),
+            expected_study_tokens(ANNOTATION)
+        );
+
+        // Grow, then shrink the middle game to exercise suffix copying and truncation.
+        for annotation in [REVISED_ANNOTATION, "Capture."] {
+            let revised = original[1].replace(ANNOTATION, annotation);
+            write_game(
+                path.to_string_lossy().into_owned(),
+                1,
+                revised.clone(),
+                app.state(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                format!("{before}{revised}{after}")
+            );
+            assert_eq!(count_pgn_games(path.clone(), app.state()).await.unwrap(), 3);
+            let reopened = read_games(path.clone(), 0, 2, app.state()).await.unwrap();
+            assert_eq!(reopened.len(), 3);
+            assert_eq!(reopened[0], original[0]);
+            assert_eq!(reopened[2], original[2]);
+            assert_eq!(reopened[1], revised);
+            let middle = read_games(path.clone(), 1, 1, app.state()).await.unwrap();
+            assert_eq!(middle, [reopened[1].clone()]);
+            assert_eq!(
+                serde_json::to_value(lex_pgn(middle[0].clone()).await.unwrap()).unwrap(),
+                expected_study_tokens(annotation)
+            );
+        }
+    }
+}

@@ -1,0 +1,9 @@
+[Event "Original capture study"]
+[Result "*"]
+[SetUp "1"]
+[FEN "7k/7p/8/3r4/4P3/8/7P/K7 w - - 4 23"]
+
+23. exd5 $1 {Take the undefended rook.}
+(23. h3 $2 {Misses the capture.} Rd4)
+23... Kg7 24. h3 *
+
