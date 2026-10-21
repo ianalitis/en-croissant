@@ -1,5 +1,13 @@
 import type { DrawShape } from "@lichess-org/chessground/draw";
-import { type Color, type Move, makeSquare, makeUci, parseUci, type Role } from "chessops";
+import {
+    type Color,
+    type Move,
+    makeSquare,
+    makeUci,
+    parseSquare,
+    parseUci,
+    type Role,
+} from "chessops";
 import { type Chess, normalizeMove } from "chessops/chess";
 import { INITIAL_FEN, makeFen, parseFen } from "chessops/fen";
 import { isPawns, parseComment } from "chessops/pgn";
@@ -31,6 +39,21 @@ export interface MoveAnalysis {
     best: BestMoves[];
     novelty: boolean;
     is_sacrifice: boolean;
+}
+
+export function getMoveDestination({
+    san,
+    halfMoves,
+    move,
+}: Pick<TreeNode, "san" | "halfMoves" | "move">) {
+    switch (san?.replace(/[+#]$/, "")) {
+        case "O-O":
+            return parseSquare(halfMoves % 2 === 1 ? "g1" : "g8");
+        case "O-O-O":
+            return parseSquare(halfMoves % 2 === 1 ? "c1" : "c8");
+        default:
+            return move?.to;
+    }
 }
 
 // copied from chessops
