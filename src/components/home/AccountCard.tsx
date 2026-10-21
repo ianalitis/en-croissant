@@ -119,20 +119,33 @@ export function AccountCard({
       targetDatabaseTitle: filename,
       sourceFileName,
     }));
-    unwrap(
-      await commands.convertPgn(
-        [filepath],
-        dbPath,
-        timestamp ? timestamp / 1000 : null,
-        filename,
-        null,
-      ),
-    );
-    events.progressEvent.emit({
-      id: `${type}_${title}`,
-      progress: 100,
-      finished: true,
-    });
+    try {
+      unwrap(
+        await commands.convertPgn(
+          [filepath],
+          dbPath,
+          timestamp ? timestamp / 1000 : null,
+          filename,
+          null,
+        ),
+      );
+      events.progressEvent.emit({
+        id: `${type}_${title}`,
+        progress: 100,
+        finished: true,
+      });
+      await commands.deleteEmptyGames(filepath.replace(".pgn", ".db3"));
+    } finally {
+      setConversionState((prev) => ({
+        ...prev,
+        inProgress: false,
+        totalGames: 0,
+        elapsedSeconds: 0,
+        targetDatabasePath: null,
+        targetDatabaseTitle: null,
+        sourceFileName: null,
+      }));
+    }
   }
 
   useEffect(() => {
@@ -211,37 +224,26 @@ export function AccountCard({
                 disabled={loading}
                 onClick={async () => {
                   setLoading(true);
-                  const lastGameDate = database ? await getLastGameDate({ database }) : null;
-                  if (type === "lichess") {
-                    await downloadLichess(
-                      title,
-                      lastGameDate,
-                      total - downloadedGames,
-                      setProgress,
-                      token,
-                    );
-                  } else {
-                    await downloadChessCom(title, lastGameDate);
-                  }
-                  const p = await resolve(databaseDir, `${title}_${type}.pgn`);
                   try {
+                    const lastGameDate = database ? await getLastGameDate({ database }) : null;
+                    if (type === "lichess") {
+                      await downloadLichess(
+                        title,
+                        lastGameDate,
+                        total - downloadedGames,
+                        setProgress,
+                        token,
+                      );
+                    } else {
+                      await downloadChessCom(title, lastGameDate);
+                    }
+                    const p = await resolve(databaseDir, `${title}_${type}.pgn`);
                     await convert(p, lastGameDate);
-                    const dbPath = p.replace(".pgn", ".db3");
-                    await commands.deleteEmptyGames(dbPath);
                   } catch (e) {
                     console.error(e);
                   } finally {
-                    setConversionState((prev) => ({
-                      ...prev,
-                      inProgress: false,
-                      totalGames: 0,
-                      elapsedSeconds: 0,
-                      targetDatabasePath: null,
-                      targetDatabaseTitle: null,
-                      sourceFileName: null,
-                    }));
+                    setLoading(false);
                   }
-                  setLoading(false);
                 }}
               >
                 <IconDownload size="1rem" />
