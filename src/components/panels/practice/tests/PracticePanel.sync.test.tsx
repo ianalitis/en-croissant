@@ -2,6 +2,7 @@ import { MantineProvider } from "@mantine/core";
 import { createStore, Provider } from "jotai";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { formatDate } from "ts-fsrs";
 import { afterEach, beforeEach, expect, it, type MockInstance, vi } from "vitest";
 import { TreeStateContext } from "@/components/common/TreeStateContext";
 import * as opening from "@/components/files/opening";
@@ -173,6 +174,24 @@ function expectPreserved(before: PracticeData) {
   expect(stored()).toEqual(JSON.parse(JSON.stringify(after)));
   expect(stored().logs).toEqual(JSON.parse(JSON.stringify(before.logs)));
 }
+
+it("shows the actual review timestamp in practice history rather than the card due date", async () => {
+  const before = atoms.get(deckAtom);
+  const reviewDate = formatDate(before.logs[0].review);
+  const dueDate = formatDate(before.logs[0].due);
+  expect(reviewDate).not.toBe(dueDate);
+  await mount();
+  const button = [...container.querySelectorAll("button")].find(
+    (element) => element.textContent === "Board.Practice.ShowLogs",
+  );
+  expect(button).toBeDefined();
+  await act(async () => button!.click());
+  const dialog = document.querySelector('[role="dialog"]');
+  expect(dialog).not.toBeNull();
+  expect(dialog!.textContent).toContain(reviewDate);
+  expect(dialog!.textContent).not.toContain(dueDate);
+  expectPreserved(before);
+});
 
 it("synchronizes a matching existing deck once on normal mount without rewriting storage", async () => {
   const root = tree.getState().root;
