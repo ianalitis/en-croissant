@@ -43,7 +43,12 @@ The following steps will get you setup to contribute changes to this repo:
 
 `pnpm test`
 
-- Runs all tests, generating a report
+- Runs the frontend tests.
+
+`cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features`
+
+- Runs the Rust backend tests, matching the Rust CI job on macOS. Other platforms need their normal Tauri native development dependencies.
+- Uses Tauri's development mode so a frontend build is not required. This does not start the app or the Vite server.
 
 `pnpm format`
 
