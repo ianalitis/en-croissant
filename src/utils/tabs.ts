@@ -1,6 +1,7 @@
 import { resolve, tempDir } from "@tauri-apps/api/path";
 import { save } from "@tauri-apps/plugin-dialog";
 import { copyFile } from "@tauri-apps/plugin-fs";
+import { platform } from "@tauri-apps/plugin-os";
 import { z } from "zod";
 import type { StoreApi } from "zustand";
 import { commands } from "@/bindings";
@@ -144,8 +145,16 @@ export async function createTab({
 
 export async function isInTempDir(filePath: string): Promise<boolean> {
     const tmp = await tempDir();
-    const normalize = (p: string) => p.replace(/[\\/]+/g, "/").toLowerCase();
-    return normalize(filePath).startsWith(normalize(tmp));
+    const os = platform();
+    const normalize = (p: string) =>
+        os === "linux" ? p.replace(/\/+/g, "/") : p.replace(/[\\/]+/g, "/").toLowerCase();
+    const path = normalize(filePath);
+    const directory = normalize(tmp);
+    // Preserve existing classification on platforms with unestablished filesystem policy.
+    if (os !== "linux" && os !== "windows") return path.startsWith(directory);
+    return (
+        path === directory || path.startsWith(directory.endsWith("/") ? directory : `${directory}/`)
+    );
 }
 
 // writeGame rewrites the whole PGN file, so different games and stores must
