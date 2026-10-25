@@ -1997,9 +1997,17 @@ async fn load_search_index(
         return Ok(index);
     }
 
+    let index_path = get_index_path(file);
+    // In-app mutations drop the index through `invalidate_search_cache`, but a
+    // database can also change outside the app: an index older than its
+    // database may predate imported games, so remove it and rebuild below.
+    if !MmapSearchIndex::is_up_to_date(file) && index_path.exists() {
+        let _ = std::fs::remove_file(&index_path);
+    }
+
     let index = ensure_search_index_with(
         &state.search_index_generation,
-        &get_index_path(file),
+        &index_path,
         cached_for_file,
         || generate_search_index(file, state),
     )
