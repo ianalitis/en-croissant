@@ -53,6 +53,86 @@ full port. A single-threaded Stockfish WASM worker is a candidate, not a validat
 backend: test worker/WASM loading inside the packaged WebView before choosing it.
 Do not extract the desktop UCI transport merely to create an unused interface.
 
+## Reuse prior art from the second research document
+
+The second document strengthens the shared-implementation approach, but its
+folder tree and interface list are not prerequisites. Keep existing working
+TypeScript chess behavior in TypeScript and Rust behavior in Rust. Extract a
+boundary only for an actual second target or a concrete native integration.
+
+- **Readest:** its [architecture](https://github.com/readest/readest/blob/f1e1836d019b94061e7363a54bf27ea65a54c358/apps/readest-app/docs/architecture.md)
+  documents one React application across Tauri desktop/mobile and web. Its
+  `environment.ts` selects native/web service implementations and publishes the
+  native instance only after initialization succeeds. Its database directory
+  contains native/web/Node implementations plus shared migrations. Borrow focused
+  service selection and initialization ownership, not its Next.js, cloud, sync,
+  database choice, or broad application service. Documentation claims are not a
+  complete audit of that project's dependency boundaries.
+- **Historical Lichess mobile:** the [archived application](https://github.com/lichess-org/lichobile/blob/8d97c91477082143d7e791199a25424ae4f3df56/README.md)
+  used a TypeScript/Mithril/Capacitor UI and a native Stockfish plugin, with explicit
+  NNUE asset preparation. Its README declares end of life and replacement by the
+  Flutter application. This proves useful historical native-bridge prior art,
+  not a current Tauri template or a reason to migrate frameworks.
+- **Engine boundary:** the [Capacitor Stockfish plugin](https://github.com/veloce/capacitor-stockfish)
+  exposes start, command, output events, exit, CPU architecture and memory limits.
+  Those operations inform a small mobile spike. Its API does not by itself prove
+  request identity, cancellation races or lifecycle safety. Compare an embedded
+  native engine with the WASM candidate on actual devices before committing to
+  either. Keep desktop subprocess behavior intact.
+- **Tauri mobile plugins:** the [official guide](https://v2.tauri.app/develop/plugins/develop-mobile/)
+  supports Kotlin/Swift bridges, separate desktop/mobile modules and shared Rust
+  through JNI/FFI. A plugin is justified for a demonstrated native operation, not
+  merely for organizing existing code. Engine work must not block the UI thread.
+- **Specta is already implemented:** `Cargo.toml`, `lib.rs` command/event builders
+  and `src/bindings/generated.ts` already provide the suggested generated IPC
+  boundary. Preserve it rather than install or replace it. Generated types do not
+  validate imported PGN content or grant runtime permissions.
+
+For document exchange, share import/export behavior rather than desktop absolute
+paths. Define cancellation and durable ownership of imported content. For engine
+analysis, share result semantics, session/request ownership and cancellation,
+not a child-process handle. A browser test adapter need not become a PWA product.
+
+Do not add a second storage system or new data schema merely to follow the
+research's sample `StudyRepository`. First test whether the existing native data
+ownership and portable PGN behavior can support the selected phone workflow.
+Defer account sync and broad module moves. Touch alternatives, promotion,
+variation selection, Android Back, safe areas, keyboard occlusion, rotation,
+screen-reader labels, interrupted saves and upgrade preservation belong in the
+workflow acceptance criteria, not a final cosmetic pass. Borrowed code, bundled
+engines and NNUE assets require license/source review before distribution.
+
+## Independent review findings
+
+Two independent Astra reviewers assessed native feasibility and mobile reuse
+against groundwork commit `6e6bbd50`. The captain checked the material source
+references below. These are source/research reviews, not compiled-device results.
+
+1. **Entry point:** exact comparison confirms current desktop initialization was
+   moved without changing its control flow. This does not establish Android
+   compatibility or replace a fresh desktop build/smoke test.
+2. **Debug startup:** `lib.rs` exports Specta bindings to
+   `../src/bindings/generated.ts` under `debug_assertions` and panics on failure.
+   An Android debug app must not attempt this development-repository write on the
+   device. Keep generation on the development host rather than disabling debug
+   checks or hand-editing bindings.
+3. **Native target isolation:** single-instance/window-state registration and
+   desktop plugin dependencies remain unconditional. The AIX preparation script
+   selects `process.platform`/`process.arch` and accepts an existing nonempty file
+   without verifying its target. Merely changing the library target is not enough.
+   First prove one ARM64 launch and IPC call with correctly scoped resources.
+4. **Durable edits and training:** `debouncedStorage.ts` queues writes for 300 ms
+   into `sessionStorage` and flushes on `beforeunload`/`pagehide`. That is not a
+   process-death durability contract. Confirm app-private durable writes before
+   showing Saved, and test termination inside the debounce interval. Practice
+   progression also uses 300 ms timers, requiring suspension/double-grading tests.
+5. **Reuse without overpromising:** Chessground already supports tap-selection and
+   dragging; retain those controls. Its wrapper has no explicit destroy cleanup,
+   and asynchronous startup listeners can outlive an early cleanup. Treat these
+   as remount/lifecycle checks to reproduce, not as demonstrated Android defects.
+   Preserve Specta and existing chess behavior; do not copy Readest's service
+   surface or implement both native and WASM engines before a device comparison.
+
 ## Smallest useful milestone
 
 A debug APK must open a bundled or imported PGN offline, allow legal board/move
@@ -95,7 +175,7 @@ Do not promise availability dates before these gates pass.
 - Add seven regression cases covering Android, iOS, Windows, macOS, Linux and
   absent/empty target environment values.
 
-No dependency versions, generated bindings, permissions, startup behavior, engine
+No dependency versions, generated bindings, permissions, startup logic, engine
 implementation, release configuration or public PR branch were changed.
 This is foundational source work, **not a claim that Android compiles**.
 
@@ -118,7 +198,7 @@ Only the host Rust target is installed on the inspected toolchains.
 | Entry-point preservation                                      | Exact relocation comparison against pinned upstream passed; Cargo metadata recognizes library and binary; dependencies unchanged. |
 | Desktop Rust check, baseline and candidate                    | Blocked offline by uncached pinned `aix-chess-compression` revision `9cacddc2`.                                                   |
 | Android/iOS compile, install, launch and device workflow      | Not run. Required Rust targets are not installed.                                                                                 |
-| Independent Astra/high review                                 | Not performed; dispatch admission unresolved. No review or acceptance is implied.                                                 |
+| Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.     |
 
 Use repository-local binaries for frontend checks when avoiding package-manager
 installation side effects. The normal project scripts remain unchanged. For
