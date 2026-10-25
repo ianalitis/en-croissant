@@ -175,36 +175,66 @@ Do not promise availability dates before these gates pass.
 - Add seven regression cases covering Android, iOS, Windows, macOS, Linux and
   absent/empty target environment values.
 
-No dependency versions, generated bindings, permissions, startup logic, engine
-implementation, release configuration or public PR branch were changed.
-This is foundational source work, **not a claim that Android compiles**.
+- Scope CLI, updater, single-instance and window-state dependencies to desktop,
+  and gate single-instance/window-state registration without changing desktop order.
+- Keep debug Specta export on desktop, where the source repository exists.
+- Move the three desktop-only plugin grants into a desktop-scoped capability.
+  The desktop permission union is unchanged. Five target-selection tests cover
+  Android/iOS exclusion and macOS/Windows/Linux preservation.
+
+No dependency versions, generated bindings, engine implementation, release
+configuration or public PR branch were changed. Native startup and permission
+selection now follow the target. This is foundational source work,
+**not a claim that Android compiles**.
 
 ## Validation at this revision
 
 Installed baseline: Node 26.10.0, pnpm 12.15.0, Rust 1.98.1, Tauri CLI 2.10.0,
 Java 17.0.20.1, Android SDK platform 36, build-tools 35.0.0/36.0.0, NDK 27.1.12297006.
-Only the host Rust target is installed on the inspected toolchains.
+The initial inspection found only the host Rust target. The follow-through installed
+`aarch64-linux-android` and `x86_64-linux-android` on the existing Rust 1.98.1
+and fetched dependencies at the existing lockfile versions. No toolchain upgrade.
 
-| Check                                                         | Result                                                                                                                            |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Current-upstream frontend baseline                            | 70 tests passed; TypeScript passed.                                                                                               |
-| Target regression before fix                                  | Four expected failures: Android/iOS/Windows/Linux used the macOS build host.                                                      |
-| Target regression after fix                                   | All seven passed.                                                                                                                 |
-| Full candidate frontend suite                                 | 77 tests passed.                                                                                                                  |
-| Candidate TypeScript                                          | Passed.                                                                                                                           |
-| Candidate frontend build                                      | Passed with bundler warnings. Not browser/native runtime acceptance.                                                              |
-| Candidate lint                                                | Zero errors, 96 warnings in unchanged application code.                                                                           |
-| Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                           |
-| Entry-point preservation                                      | Exact relocation comparison against pinned upstream passed; Cargo metadata recognizes library and binary; dependencies unchanged. |
-| Desktop Rust check, baseline and candidate                    | Blocked offline by uncached pinned `aix-chess-compression` revision `9cacddc2`.                                                   |
-| Android/iOS compile, install, launch and device workflow      | Not run. Required Rust targets are not installed.                                                                                 |
-| Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.     |
+Tauri CLI `android init --ci --skip-targets-install` successfully generated the
+Android project using the existing SDK. It remains local and ignored under
+`src-tauri/gen/`, following the repository's existing ignore rule. Generated build
+versions are Gradle 8.14.3, Android Gradle Plugin 8.11.0, Kotlin 1.9.25, SDK 36,
+minimum Android API 24. Gradle dependency resolution and APK assembly have not run.
+
+A real ARM64 `cargo check --lib --locked --target aarch64-linux-android`, using
+NDK 27.1's API-24 Clang toolchain, reached dependency compilation and stopped at
+`openssl-sys 0.9.101`: no Android OpenSSL installation. The dependency tree traces
+this to the direct `reqwest 0.12.5` default TLS feature. This is a concrete next
+build blocker, not an Android application error or evidence that DuckDB/AIX works.
+Do not point cross-compilation at host OpenSSL or bypass certificate verification.
+
+| Check                                                         | Result                                                                                                                                                  |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Current-upstream frontend baseline                            | 70 tests passed; TypeScript passed.                                                                                                                     |
+| Target regression before fix                                  | Four expected failures: Android/iOS/Windows/Linux used the macOS build host.                                                                            |
+| Target regression after fix                                   | All seven passed.                                                                                                                                       |
+| Full candidate frontend suite                                 | 82 tests passed after desktop capability scoping, including five new platform-selection cases.                                                          |
+| Candidate TypeScript                                          | Passed.                                                                                                                                                 |
+| Candidate frontend build                                      | Passed with bundler warnings. Not browser/native runtime acceptance.                                                                                    |
+| Candidate lint                                                | Zero errors, 96 warnings in unchanged application code.                                                                                                 |
+| Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                 |
+| Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection. |
+| Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                     |
+| Android/iOS compile, install, launch and device workflow      | Android ARM64 dependency compilation blocked by OpenSSL cross-compilation. No APK/link, launch, device workflow or iOS compile.                         |
+| Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                           |
 
 Use repository-local binaries for frontend checks when avoiding package-manager
-installation side effects. The normal project scripts remain unchanged. For
-native checks, obtain approval to fetch the existing locked dependencies and
-install the required target toolchains first. Do not substitute old desktop
-artifacts, old test results, source inspection or Cargo metadata for compilation.
+installation side effects. The normal project scripts remain unchanged. The named
+Android target and locked dependency preparation has completed. Additional
+installations, signing, device installation and publication remain separate
+scopes. Do not substitute old desktop artifacts, old test results, source
+inspection or Cargo metadata for compilation.
+
+A third independent Astra/high source review covered the desktop plugin gates.
+Its capability finding was resolved by the platform split and independently
+rechecked against the final files. The review did not compile or run the app.
+Complexity check: keep target-scoped dependency/permission declarations and two
+builder gates; no new platform framework, service abstraction or duplicated app.
 
 ## Primary references checked
 

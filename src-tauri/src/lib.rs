@@ -26,7 +26,7 @@ use progress::{clear_progress, get_progress, ProgressEvent, ProgressStore};
 
 use log::LevelFilter;
 use oauth::AuthState;
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, desktop))]
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use sysinfo::SystemExt;
 use tauri::{Emitter, Manager, Window};
@@ -194,7 +194,7 @@ pub fn run() {
             GameOverEvent
         ));
 
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, desktop))]
     specta_builder
         .export(
             Typescript::default().bigint(BigIntExportBehavior::BigInt),
@@ -213,21 +213,28 @@ pub fn run() {
         },
     ];
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            if let Some(file) = file_from_args(&args, &cwd) {
-                if let Err(err) = app.emit_to("main", "open-cli-file", file) {
-                    log::error!("Failed to forward command-line file: {err}");
-                }
+    let builder = tauri::Builder::default();
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        if let Some(file) = file_from_args(&args, &cwd) {
+            if let Err(err) = app.emit_to("main", "open-cli-file", file) {
+                log::error!("Failed to forward command-line file: {err}");
             }
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }))
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+
+    let builder = builder.plugin(tauri_plugin_deep_link::init());
+
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_window_state::Builder::new().build());
+
+    builder
         .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_log::Builder::default()
