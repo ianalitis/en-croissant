@@ -182,6 +182,9 @@ Do not promise availability dates before these gates pass.
   The desktop permission union is unchanged. Five target-selection tests cover
   Android/iOS exclusion and macOS/Windows/Linux preservation.
 
+- Select Rustls for Android's direct HTTP client instead of requiring a target
+  OpenSSL installation. Non-Android TLS selection is unchanged.
+
 No dependency versions, generated bindings, engine implementation, release
 configuration or public PR branch were changed. Native startup and permission
 selection now follow the target. This is foundational source work,
@@ -202,11 +205,24 @@ versions are Gradle 8.14.3, Android Gradle Plugin 8.11.0, Kotlin 1.9.25, SDK 36,
 minimum Android API 24. Gradle dependency resolution and APK assembly have not run.
 
 A real ARM64 `cargo check --lib --locked --target aarch64-linux-android`, using
-NDK 27.1's API-24 Clang toolchain, reached dependency compilation and stopped at
-`openssl-sys 0.9.101`: no Android OpenSSL installation. The dependency tree traces
-this to the direct `reqwest 0.12.5` default TLS feature. This is a concrete next
-build blocker, not an Android application error or evidence that DuckDB/AIX works.
-Do not point cross-compilation at host OpenSSL or bypass certificate verification.
+NDK 27.1's API-24 Clang toolchain, initially stopped at `openssl-sys 0.9.101`:
+no Android OpenSSL installation. The dependency tree traced this to the direct
+`reqwest 0.12.5` default TLS feature. Android now selects the existing Rustls
+backend while non-Android keeps the exact prior dependency declaration. The
+Android resolved graph no longer includes OpenSSL/default TLS; the macOS graph
+still includes default TLS. Versions and the lockfile remain unchanged.
+
+The subsequent check passed that dependency stage and reached the application
+build script, which fails because the desktop AIX extension resource is missing.
+This is the next concrete resource-selection blocker, not successful native
+compilation or proof that DuckDB/AIX works. Do not download/package a host extension
+for Android merely to satisfy the file check.
+
+A separate Astra/high source review found no blocking issue in the Android TLS
+selection. Rustls uses bundled WebPKI roots, not automatic Android system or
+user-installed CA trust. No certificate validation was disabled, but live HTTPS
+and custom-CA behavior remain untested. The HTTP plugin already selected Rustls;
+OAuth's separate reqwest 0.11 dependency is unchanged.
 
 | Check                                                         | Result                                                                                                                                                  |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -220,7 +236,7 @@ Do not point cross-compilation at host OpenSSL or bypass certificate verificatio
 | Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                 |
 | Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection. |
 | Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                     |
-| Android/iOS compile, install, launch and device workflow      | Android ARM64 dependency compilation blocked by OpenSSL cross-compilation. No APK/link, launch, device workflow or iOS compile.                         |
+| Android/iOS compile, install, launch and device workflow      | Android ARM64 check passed the OpenSSL stage, then failed on the missing desktop AIX resource. No APK/link, launch, device workflow or iOS compile.     |
 | Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                           |
 
 Use repository-local binaries for frontend checks when avoiding package-manager
