@@ -7,6 +7,10 @@ license = "GPL-3.0-only"
 repository = "https://github.com/franciscoBSalgueiro/en-croissant"
 edition = "2021"
 
+[lib]
+name = "en_croissant_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]

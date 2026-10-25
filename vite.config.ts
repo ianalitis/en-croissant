@@ -8,6 +8,13 @@ import * as os from "node:os";
 const isDebug = !!process.env.TAURI_ENV_DEBUG;
 const host = process.env.TAURI_DEV_HOST;
 
+// Cross-compilation must follow the target, not the machine running Vite.
+const PLATFORM_ALIASES: Record<string, string> = {
+    windows: "win32",
+    macos: "darwin",
+};
+const platform = process.env.TAURI_ENV_PLATFORM || os.platform();
+
 // https://vitejs.dev/config/
 export default defineConfig({
     plugins: [
@@ -45,6 +52,6 @@ export default defineConfig({
         environment: "jsdom",
     },
     define: {
-        "import.meta.env.VITE_PLATFORM": JSON.stringify(os.platform()),
+        "import.meta.env.VITE_PLATFORM": JSON.stringify(PLATFORM_ALIASES[platform] ?? platform),
     },
 });
