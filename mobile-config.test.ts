@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 
@@ -17,6 +18,31 @@ const androidConfigPath = new URL("./src-tauri/tauri.android.conf.json", import.
 const androidConfig = existsSync(androidConfigPath)
     ? JSON.parse(readFileSync(androidConfigPath, "utf8"))
     : {};
+
+it("resolves the Android Gradle callback from its configured working directory", () => {
+    const androidDirectory = new URL("./src-tauri/gen/android/", import.meta.url);
+    const gradle = readFileSync(new URL("app/build.gradle.kts", androidDirectory), "utf8");
+    const task = readFileSync(
+        new URL("buildSrc/src/main/java/org/encroissant/app/kotlin/BuildTask.kt", androidDirectory),
+        "utf8",
+    );
+    const rootDirRel = gradle.match(/rootDirRel = "([^"]+)"/)?.[1];
+    const argsList = task.match(/val args = listOf\(([^)]+)\)/)?.[1];
+    expect(task).toContain('val executable = """node"""');
+    expect(rootDirRel).toBeDefined();
+    expect(argsList).toBeDefined();
+    const args = [...(argsList ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    expect(args.slice(1)).toEqual(["android", "android-studio-script"]);
+    const result = spawnSync(process.execPath, [...args, "--help"], {
+        cwd: new URL(rootDirRel ?? "", new URL("app/", androidDirectory)),
+        encoding: "utf8",
+        timeout: 10_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("android-studio-script");
+});
 
 it("removes unsupported native resources from the Android merge patch", () => {
     expect(androidConfig.bundle?.resources).toEqual({

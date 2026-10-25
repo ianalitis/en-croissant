@@ -39,7 +39,7 @@ Treat its proposed interfaces and directory tree as options, not an implementati
 checklist. No domain migration, monorepo, universal service layer, alternate
 framework, or remote server is needed to prove the first workflow.
 
-| Evidence in the current source                                                                                            | Consequence                                                                                                                        |
+| Evidence at the upstream baseline                                                                                         | Consequence                                                                                                                        |
 | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `App.tsx` starts splashscreen IPC, native logging, updater, CLI and deep-link handling.                                   | Mobile needs deliberate startup selection. Browser compatibility needs more than guarding one call.                                |
 | Router startup loads four native directories. `utils/directories.ts` uses document/home paths and native filesystem APIs. | Prove app-private persistence and platform file-picker/content-URI behavior. Do not assume desktop absolute paths work on Android. |
@@ -195,8 +195,13 @@ Do not promise availability dates before these gates pass.
   unsupported error. No fake position, CPU-feature override or inference claim.
 - Keep desktop splashscreen window visibility handling off mobile targets.
 
-No dependency versions, generated bindings, engine implementation, release
-configuration or public PR branch were changed. Native startup and permission
+- Retain the generated Android project and wrapper in source control so the
+  corrected Gradle callback survives a fresh checkout. Build caches, copied
+  runtime resources, generated plugin sources, native libraries, local settings
+  and signing files remain ignored.
+
+No existing dependency versions, generated bindings, engine implementation,
+desktop release configuration or public PR branch were changed. Native startup and permission
 selection now follow the target. This is an Android build spike,
 **not a usable mobile release or a validated study workflow**.
 
@@ -209,11 +214,11 @@ The initial inspection found only the host Rust target. The follow-through insta
 and fetched dependencies at the existing lockfile versions. No toolchain upgrade.
 
 Tauri CLI `android init --ci --skip-targets-install` successfully generated the
-Android project using the existing SDK. It remains local and ignored under
-`src-tauri/gen/`, following the repository's existing ignore rule. Generated build
-versions are Gradle 8.14.3, Android Gradle Plugin 8.11.0, Kotlin 1.9.25, SDK 36,
-minimum Android API 24. The pinned Gradle wrapper successfully reports 8.14.3
-under existing Java 17. Android dependency resolution/assembly has not completed.
+Android project using the existing SDK. Its template sources are now retained in
+`src-tauri/gen/android/`; other generated targets and schemas remain ignored.
+Generated build versions are Gradle 8.14.3, Android Gradle Plugin 8.11.0,
+Kotlin 1.9.25, SDK 36, minimum Android API 24. The pinned Gradle wrapper successfully
+reports 8.14.3 under existing Java 17. Android assembly has not completed.
 
 A real ARM64 `cargo check --lib --locked --target aarch64-linux-android`, using
 NDK 27.1's API-24 Clang toolchain, initially stopped at `openssl-sys 0.9.101`:
@@ -258,10 +263,30 @@ The debug library is approximately 1 GB with debug symbols and is not suitable
 for tester distribution in this form.
 
 APK assembly then failed in generated Gradle task `rustBuildArm64Debug`: its
-callback executes `node tauri` from `src-tauri`, where that module does not exist.
-Calling the existing CLI's real relative path with `android android-studio-script
---help` succeeds. Correct/regenerate the callback without skipping its Rust build
-verification, then rerun packaging. No APK was produced.
+callback executed `node tauri` from `src-tauri`, where that module does not exist.
+The retained `BuildTask.kt` now invokes
+`node ../node_modules/@tauri-apps/cli/tauri.js android android-studio-script`.
+A regression extracts its arguments and configured working directory, then runs
+that real CLI with `--help`. It failed with the original module-not-found error
+and passes with the corrected path. This does not execute Gradle or its Rust
+callback protocol. The real build still requires the Rust task; no task exclusion
+was added. A separate offline Gradle `:app:rustBuildArm64Debug --dry-run` compiled
+`buildSrc` Kotlin and its JAR successfully, then skipped the Rust task as expected
+for a dry run. The template's `project.exec` deprecation warning remains visible.
+No APK was produced, and full assembly has not been rerun after this correction.
+A clean-checkout build also remains unverified.
+
+The native project is already retained, so ordinary builds should not rerun
+`android init` over its reviewed changes. With the documented Android prerequisites
+and project dependencies installed, the build entry point from the repository root is:
+
+```sh
+node node_modules/@tauri-apps/cli/tauri.js android build --ci --target aarch64 --debug --apk
+```
+
+Tauri prepares the ignored runtime/plugin configuration during its build workflow.
+Do not substitute direct Gradle invocation or commit machine-local generated files.
+Regeneration during a future CLI upgrade must preserve or revalidate the callback.
 
 The oversized debug artifact needs a lower-debug-information build before tester
 packaging. Hide unavailable image recognition/database controls before user testing.
@@ -272,20 +297,20 @@ user-installed CA trust. No certificate validation was disabled, but live HTTPS
 and custom-CA behavior remain untested. The HTTP plugin already selected Rustls;
 OAuth's separate reqwest 0.11 dependency is unchanged.
 
-| Check                                                         | Result                                                                                                                                                  |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Current-upstream frontend baseline                            | 70 tests passed; TypeScript passed.                                                                                                                     |
-| Target regression before fix                                  | Four expected failures: Android/iOS/Windows/Linux used the macOS build host.                                                                            |
-| Target regression after fix                                   | All seven passed.                                                                                                                                       |
-| Full candidate frontend suite                                 | 83 tests passed, including six mobile capability/resource configuration cases.                                                                          |
-| Candidate TypeScript                                          | Passed.                                                                                                                                                 |
-| Candidate frontend build                                      | Passed with bundler warnings. Not browser/native runtime acceptance.                                                                                    |
-| Candidate lint                                                | Zero errors, 96 warnings in unchanged application code.                                                                                                 |
-| Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                 |
-| Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection. |
-| Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                     |
-| Android/iOS compile, install, launch and device workflow      | ARM64 Rust compile/link passed. APK packaging fails at generated CLI callback. No APK, launch, device workflow or iOS compile.                          |
-| Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                           |
+| Check                                                         | Result                                                                                                                                                                       |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Current-upstream frontend baseline                            | 70 tests passed; TypeScript passed.                                                                                                                                          |
+| Target regression before fix                                  | Four expected failures: Android/iOS/Windows/Linux used the macOS build host.                                                                                                 |
+| Target regression after fix                                   | All seven passed.                                                                                                                                                            |
+| Full candidate frontend suite                                 | 84 tests passed, including six capability/resource cases and the real CLI callback-path regression.                                                                          |
+| Candidate TypeScript                                          | Passed.                                                                                                                                                                      |
+| Candidate frontend build                                      | Passed with bundler warnings. Not browser/native runtime acceptance.                                                                                                         |
+| Candidate lint                                                | Zero errors, 96 warnings in unchanged application code.                                                                                                                      |
+| Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                                      |
+| Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection.                      |
+| Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                                          |
+| Android/iOS compile, install, launch and device workflow      | ARM64 Rust compile/link passed. Callback-path regression passes after packaging failure; Gradle assembly has not been rerun. No APK, launch, device workflow or iOS compile. |
+| Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                                                |
 
 Use repository-local binaries for frontend checks when avoiding package-manager
 installation side effects. The normal project scripts remain unchanged. The named
@@ -299,6 +324,15 @@ Its capability finding was resolved by the platform split and independently
 rechecked against the final files. The review did not compile or run the app.
 Complexity check: keep target-scoped dependency/permission declarations and two
 builder gates; no new platform framework, service abstraction or duplicated app.
+
+A further independent Astra/high review found no blocking source defect in the
+retained scaffold or callback correction. Ignore probes exclude generated native
+libraries, plugin sources, resources, caches and local/signing settings. XML parses
+and tracked files contain no absolute host paths. This review did not run tests or
+builds. Its stale documentation finding was corrected by the captain.
+
+Complexity check: keep the generated Gradle callback with one corrected script
+path. No custom launcher, build-task bypass or new platform framework is needed.
 
 ## Primary references checked
 
