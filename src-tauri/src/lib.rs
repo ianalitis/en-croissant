@@ -252,18 +252,25 @@ pub fn run() {
         .setup(move |app| {
             log::info!("Setting up application");
 
-            let aixchess_extension_path = app
-                .path()
-                .resolve(
-                    "aixchess.duckdb_extension",
-                    tauri::path::BaseDirectory::Resource,
-                )
-                .expect("failed to resolve aixchess extension resource path");
-            let state = app.state::<AppState>();
-            *state
-                .aixchess_extension_path
-                .lock()
-                .expect("aixchess extension path mutex poisoned") = Some(aixchess_extension_path);
+            // The Android preview does not bundle a desktop DuckDB extension.
+            // Leave its path unset so opening a DuckDB pool fails instead of loading
+            // a binary for the build host. PGN files do not require the extension.
+            #[cfg(not(target_os = "android"))]
+            {
+                let aixchess_extension_path = app
+                    .path()
+                    .resolve(
+                        "aixchess.duckdb_extension",
+                        tauri::path::BaseDirectory::Resource,
+                    )
+                    .expect("failed to resolve aixchess extension resource path");
+                let state = app.state::<AppState>();
+                *state
+                    .aixchess_extension_path
+                    .lock()
+                    .expect("aixchess extension path mutex poisoned") =
+                    Some(aixchess_extension_path);
+            }
 
             #[cfg(any(target_os = "linux", windows))]
             {

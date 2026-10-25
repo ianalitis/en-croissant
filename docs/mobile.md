@@ -185,6 +185,11 @@ Do not promise availability dates before these gates pass.
 - Select Rustls for Android's direct HTTP client instead of requiring a target
   OpenSSL installation. Non-Android TLS selection is unchanged.
 
+- Exclude only the desktop AIX resource through Android's JSON merge patch and
+  skip its host-download preparation hook. Keep shared resource mappings intact.
+  Android leaves the extension path unset, so opening a new DuckDB pool reports
+  an error rather than loading a host-native extension.
+
 No dependency versions, generated bindings, engine implementation, release
 configuration or public PR branch were changed. Native startup and permission
 selection now follow the target. This is foundational source work,
@@ -202,7 +207,8 @@ Tauri CLI `android init --ci --skip-targets-install` successfully generated the
 Android project using the existing SDK. It remains local and ignored under
 `src-tauri/gen/`, following the repository's existing ignore rule. Generated build
 versions are Gradle 8.14.3, Android Gradle Plugin 8.11.0, Kotlin 1.9.25, SDK 36,
-minimum Android API 24. Gradle dependency resolution and APK assembly have not run.
+minimum Android API 24. The pinned Gradle wrapper successfully reports 8.14.3
+under existing Java 17. Android dependency resolution/assembly has not completed.
 
 A real ARM64 `cargo check --lib --locked --target aarch64-linux-android`, using
 NDK 27.1's API-24 Clang toolchain, initially stopped at `openssl-sys 0.9.101`:
@@ -213,10 +219,21 @@ Android resolved graph no longer includes OpenSSL/default TLS; the macOS graph
 still includes default TLS. Versions and the lockfile remain unchanged.
 
 The subsequent check passed that dependency stage and reached the application
-build script, which fails because the desktop AIX extension resource is missing.
-This is the next concrete resource-selection blocker, not successful native
-compilation or proof that DuckDB/AIX works. Do not download/package a host extension
-for Android merely to satisfy the file check.
+build script, which failed because the desktop AIX extension resource was missing.
+Android now removes that resource using Tauri's JSON merge-patch semantics,
+without changing sound/vision resource mappings or desktop preparation. This is
+not a DuckDB port: Android's extension path stays unset and new DuckDB pool
+acquisition returns an error. A separate Astra/high review verified the merge and
+failure path. It also confirmed that not all database commands use that path:
+existing empty imports, deletion and compaction have different behavior. Database
+controls must be unavailable before user testing; this guard is not a sandbox.
+
+The real `tauri android build --ci --target aarch64 --debug --apk` accepted the
+platform configuration and completed the frontend build, then failed compiling
+`gemm-f16 0.19.0` with eleven `instruction requires: fullfp16` errors. The dependency
+tree traces it to Candle's image-recognition backend. Do not globally enable
+unsupported CPU instructions just to make a binary build. No native link or APK
+was produced, and this failure does not validate all native resource packaging.
 
 A separate Astra/high source review found no blocking issue in the Android TLS
 selection. Rustls uses bundled WebPKI roots, not automatic Android system or
@@ -229,14 +246,14 @@ OAuth's separate reqwest 0.11 dependency is unchanged.
 | Current-upstream frontend baseline                            | 70 tests passed; TypeScript passed.                                                                                                                     |
 | Target regression before fix                                  | Four expected failures: Android/iOS/Windows/Linux used the macOS build host.                                                                            |
 | Target regression after fix                                   | All seven passed.                                                                                                                                       |
-| Full candidate frontend suite                                 | 82 tests passed after desktop capability scoping, including five new platform-selection cases.                                                          |
+| Full candidate frontend suite                                 | 83 tests passed, including six mobile capability/resource configuration cases.                                                                          |
 | Candidate TypeScript                                          | Passed.                                                                                                                                                 |
 | Candidate frontend build                                      | Passed with bundler warnings. Not browser/native runtime acceptance.                                                                                    |
 | Candidate lint                                                | Zero errors, 96 warnings in unchanged application code.                                                                                                 |
 | Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                 |
 | Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection. |
 | Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                     |
-| Android/iOS compile, install, launch and device workflow      | Android ARM64 check passed the OpenSSL stage, then failed on the missing desktop AIX resource. No APK/link, launch, device workflow or iOS compile.     |
+| Android/iOS compile, install, launch and device workflow      | Actual Android APK build failed in Candle/gemm-f16 requiring fullfp16. No native link, APK, launch, device workflow or iOS compile.                     |
 | Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                           |
 
 Use repository-local binaries for frontend checks when avoiding package-manager

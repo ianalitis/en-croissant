@@ -1,0 +1,11 @@
+{
+    "build": {
+        "beforeDevCommand": "node node_modules/vite/bin/vite.js",
+        "beforeBuildCommand": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build"
+    },
+    "bundle": {
+        "resources": {
+            "../aixchess.duckdb_extension": null
+        }
+    }
+}
