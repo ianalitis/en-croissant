@@ -1,6 +1,6 @@
 # Mobile feasibility and first Android milestone
 
-Status: Android ARM64 library builds locally. APK packaging and device workflow acceptance remain incomplete.
+Status: Android ARM64 debug APK builds locally. It is an internal build candidate, not a validated mobile release. Device workflows and complete 16 KB compatibility remain unverified.
 
 ## Baseline and existing work
 
@@ -195,6 +195,9 @@ Do not promise availability dates before these gates pass.
   unsupported error. No fake position, CPU-feature override or inference claim.
 - Keep desktop splashscreen window visibility handling off mobile targets.
 
+- Link the Android shared library with 16 KB maximum/common page sizes, selected
+  from Cargo's target OS rather than the build host. Other targets and output
+  types keep their existing linker settings.
 - Retain the generated Android project and wrapper in source control so the
   corrected Gradle callback survives a fresh checkout. Build caches, copied
   runtime resources, generated plugin sources, native libraries, local settings
@@ -218,7 +221,7 @@ Android project using the existing SDK. Its template sources are now retained in
 `src-tauri/gen/android/`; other generated targets and schemas remain ignored.
 Generated build versions are Gradle 8.14.3, Android Gradle Plugin 8.11.0,
 Kotlin 1.9.25, SDK 36, minimum Android API 24. The pinned Gradle wrapper successfully
-reports 8.14.3 under existing Java 17. Android assembly has not completed.
+reports 8.14.3 under existing Java 17. Android APK assembly subsequently completed.
 
 A real ARM64 `cargo check --lib --locked --target aarch64-linux-android`, using
 NDK 27.1's API-24 Clang toolchain, initially stopped at `openssl-sys 0.9.101`:
@@ -273,23 +276,47 @@ callback protocol. The real build still requires the Rust task; no task exclusio
 was added. A separate offline Gradle `:app:rustBuildArm64Debug --dry-run` compiled
 `buildSrc` Kotlin and its JAR successfully, then skipped the Rust task as expected
 for a dry run. The template's `project.exec` deprecation warning remains visible.
-No APK was produced, and full assembly has not been rerun after this correction.
-A clean-checkout build also remains unverified.
+A subsequent full low-debug build completed both the native callback and APK
+assembly. A clean-checkout build remains unverified.
 
 The native project is already retained, so ordinary builds should not rerun
 `android init` over its reviewed changes. With the documented Android prerequisites
 and project dependencies installed, the build entry point from the repository root is:
 
 ```sh
-node node_modules/@tauri-apps/cli/tauri.js android build --ci --target aarch64 --debug --apk
+CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_DEV_INCREMENTAL=false \
+  node node_modules/@tauri-apps/cli/tauri.js android build --ci --target aarch64 --debug --apk
 ```
 
 Tauri prepares the ignored runtime/plugin configuration during its build workflow.
 Do not substitute direct Gradle invocation or commit machine-local generated files.
 Regeneration during a future CLI upgrade must preserve or revalidate the callback.
 
-The oversized debug artifact needs a lower-debug-information build before tester
-packaging. Hide unavailable image recognition/database controls before user testing.
+The low-debug build completed in 232 seconds using the same installed tools, with
+Cargo offline and four build jobs. Its debug APK signature verifies, reports only
+`arm64-v8a`, and targets API 36 with minimum API 24. This is debug-signed, not a
+store release. The generated Gradle version defaults currently report version 1.0
+and code 1; production versioning/signing are still release work.
+
+Artifact inspection then found the app library's ELF LOAD alignment was 4 KB,
+even though the APK passed 16 KB ZIP alignment. The Android-only linker correction
+was rebuilt through the full Tauri/Gradle path in 19.9 seconds. The packaged app
+library now has 16 KB LOAD alignment and a 16 KB-aligned RELRO end. Signature and
+ZIP alignment checks still pass. The rebuilt APK is about 633 MiB, while its app
+library is about 312 MiB; it is not a size-optimized tester release.
+
+**The complete 16 KB check is not green.** The installed NDK 27.1 prebuilt
+`libc++_shared.so` has 16 KB LOAD alignment, but its RELRO end has a 12,288-byte
+remainder modulo 16 KB. The unchanged full-artifact check still fails on that
+library. This is an unresolved static compatibility finding, not an observed
+runtime crash. No prebuilt binary was patched and no NDK upgrade was installed.
+An independent Astra/high source review confirmed the app linker change preserves
+non-Android behavior and does not resolve that prebuilt-library finding.
+
+Next, resolve that runtime-library gate and test installation, cold launch and
+the study workflow on an explicitly selected test device. No device was installed
+or launched in this work. Hide unavailable image recognition/database controls,
+validate durable saves and reduce artifact size before inviting users to test.
 
 A separate Astra/high source review found no blocking issue in the Android TLS
 selection. Rustls uses bundled WebPKI roots, not automatic Android system or
@@ -297,20 +324,20 @@ user-installed CA trust. No certificate validation was disabled, but live HTTPS
 and custom-CA behavior remain untested. The HTTP plugin already selected Rustls;
 OAuth's separate reqwest 0.11 dependency is unchanged.
 
-| Check                                                         | Result                                                                                                                                                                       |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Current-upstream frontend baseline                            | 70 tests passed; TypeScript passed.                                                                                                                                          |
-| Target regression before fix                                  | Four expected failures: Android/iOS/Windows/Linux used the macOS build host.                                                                                                 |
-| Target regression after fix                                   | All seven passed.                                                                                                                                                            |
-| Full candidate frontend suite                                 | 84 tests passed, including six capability/resource cases and the real CLI callback-path regression.                                                                          |
-| Candidate TypeScript                                          | Passed.                                                                                                                                                                      |
-| Candidate frontend build                                      | Passed with bundler warnings. Not browser/native runtime acceptance.                                                                                                         |
-| Candidate lint                                                | Zero errors, 96 warnings in unchanged application code.                                                                                                                      |
-| Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                                      |
-| Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection.                      |
-| Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                                          |
-| Android/iOS compile, install, launch and device workflow      | ARM64 Rust compile/link passed. Callback-path regression passes after packaging failure; Gradle assembly has not been rerun. No APK, launch, device workflow or iOS compile. |
-| Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                                                |
+| Check                                                         | Result                                                                                                                                                  |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Current-upstream frontend baseline                            | 70 tests passed; TypeScript passed.                                                                                                                     |
+| Target regression before fix                                  | Four expected failures: Android/iOS/Windows/Linux used the macOS build host.                                                                            |
+| Target regression after fix                                   | All seven passed.                                                                                                                                       |
+| Full candidate frontend suite                                 | 84 tests passed, including six capability/resource cases and the real CLI callback-path regression.                                                     |
+| Candidate TypeScript                                          | Passed.                                                                                                                                                 |
+| Candidate frontend build                                      | Passed with bundler warnings. Not browser/native runtime acceptance.                                                                                    |
+| Candidate lint                                                | Zero errors, 96 warnings in unchanged application code.                                                                                                 |
+| Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                 |
+| Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection. |
+| Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                     |
+| Android/iOS compile, install, launch and device workflow      | ARM64 debug APK built; signature and ZIP checks pass. App ELF alignment fixed, prebuilt C++ RELRO check still fails. No device workflow or iOS compile. |
+| Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                           |
 
 Use repository-local binaries for frontend checks when avoiding package-manager
 installation side effects. The normal project scripts remain unchanged. The named
@@ -340,6 +367,10 @@ Documentation was obtained through Context7 (Tauri documentation repository) and
 direct fetches of Tauri primary documentation on 2026-10-25. The supplied research
 is secondary material, not build evidence.
 
+- [Android 16 KB page sizes](https://developer.android.com/guide/practices/page-sizes):
+  inspect each packaged library's ELF LOAD and RELRO alignment separately from APK
+  ZIP alignment, then run on a 16 KB test environment. Static checks do not replace
+  runtime acceptance.
 - [Mobile entry point](https://v2.tauri.app/start/migrate/from-tauri-1/)
 - [Mobile prerequisites](https://v2.tauri.app/start/prerequisites/)
 - [Development and `TAURI_DEV_HOST`](https://v2.tauri.app/develop/)
