@@ -1,6 +1,6 @@
 # Mobile feasibility and first Android milestone
 
-Status: local groundwork, not a mobile build or a release commitment.
+Status: Android ARM64 library builds locally. APK packaging and device workflow acceptance remain incomplete.
 
 ## Baseline and existing work
 
@@ -185,15 +185,20 @@ Do not promise availability dates before these gates pass.
 - Select Rustls for Android's direct HTTP client instead of requiring a target
   OpenSSL installation. Non-Android TLS selection is unchanged.
 
-- Exclude only the desktop AIX resource through Android's JSON merge patch and
-  skip its host-download preparation hook. Keep shared resource mappings intact.
+- Exclude the desktop AIX and unvalidated image-inference resources through
+  Android's JSON merge patch, and skip host AIX preparation. Preserve sound mapping.
   Android leaves the extension path unset, so opening a new DuckDB pool reports
   an error rather than loading a host-native extension.
 
+- Keep Candle/image dependencies and the existing recognition implementation on
+  non-Android targets. Android retains the IPC command but returns an explicit
+  unsupported error. No fake position, CPU-feature override or inference claim.
+- Keep desktop splashscreen window visibility handling off mobile targets.
+
 No dependency versions, generated bindings, engine implementation, release
 configuration or public PR branch were changed. Native startup and permission
-selection now follow the target. This is foundational source work,
-**not a claim that Android compiles**.
+selection now follow the target. This is an Android build spike,
+**not a usable mobile release or a validated study workflow**.
 
 ## Validation at this revision
 
@@ -220,10 +225,10 @@ still includes default TLS. Versions and the lockfile remain unchanged.
 
 The subsequent check passed that dependency stage and reached the application
 build script, which failed because the desktop AIX extension resource was missing.
-Android now removes that resource using Tauri's JSON merge-patch semantics,
-without changing sound/vision resource mappings or desktop preparation. This is
-not a DuckDB port: Android's extension path stays unset and new DuckDB pool
-acquisition returns an error. A separate Astra/high review verified the merge and
+Android excludes the desktop extension through Tauri's JSON merge patch. Its
+resource-selection build-script output retains sound files. Desktop preparation
+is unchanged. This is not a DuckDB port: Android's extension path stays unset and
+new DuckDB pool acquisition returns an error. A separate Astra/high review verified the merge and
 failure path. It also confirmed that not all database commands use that path:
 existing empty imports, deletion and compaction have different behavior. Database
 controls must be unavailable before user testing; this guard is not a sandbox.
@@ -231,9 +236,35 @@ controls must be unavailable before user testing; this guard is not a sandbox.
 The real `tauri android build --ci --target aarch64 --debug --apk` accepted the
 platform configuration and completed the frontend build, then failed compiling
 `gemm-f16 0.19.0` with eleven `instruction requires: fullfp16` errors. The dependency
-tree traces it to Candle's image-recognition backend. Do not globally enable
-unsupported CPU instructions just to make a binary build. No native link or APK
-was produced, and this failure does not validate all native resource packaging.
+tree traced it to Candle's image-recognition backend. Android now excludes that
+backend and its unused assets, with the existing recognition IPC returning an
+explicit unsupported error. Desktop/iOS declarations and original inference
+source are unchanged. No global CPU-feature flag was added.
+
+A further Astra/high review found no blocking source defect in this exclusion.
+The actual Android build script completed resource selection with sound files
+and no AIX/vision files, and the Android dependency graph excludes Candle.
+Compilation then exposed the desktop-only `WebviewWindow.show()` call in
+`close_splashscreen`. Its existing operation and `Emitter` import are now scoped
+to desktop. Mobile acknowledges the visibility command without trying to unhide
+a desktop window. The injected window argument is not part of the frontend IPC
+payload. An independent source follow-up verified this correction.
+
+The next real Android build **compiled and linked** the ARM64 shared library in
+54.98 seconds. ELF inspection confirms AArch64. Two unchanged-code warnings
+remain: unused `Semaphore` and `NotDistinctPlayers`. This is native build evidence,
+not runtime visibility, file persistence, engine analysis or device acceptance.
+The debug library is approximately 1 GB with debug symbols and is not suitable
+for tester distribution in this form.
+
+APK assembly then failed in generated Gradle task `rustBuildArm64Debug`: its
+callback executes `node tauri` from `src-tauri`, where that module does not exist.
+Calling the existing CLI's real relative path with `android android-studio-script
+--help` succeeds. Correct/regenerate the callback without skipping its Rust build
+verification, then rerun packaging. No APK was produced.
+
+The oversized debug artifact needs a lower-debug-information build before tester
+packaging. Hide unavailable image recognition/database controls before user testing.
 
 A separate Astra/high source review found no blocking issue in the Android TLS
 selection. Rustls uses bundled WebPKI roots, not automatic Android system or
@@ -253,7 +284,7 @@ OAuth's separate reqwest 0.11 dependency is unchanged.
 | Changed TypeScript formatting and Rust entry-point formatting | Passed.                                                                                                                                                 |
 | Entry-point preservation                                      | Exact relocation at groundwork commit checked against pinned upstream. Later gates preserve desktop plugin order and dependency versions by inspection. |
 | Initial desktop Rust check at groundwork commit               | Blocked offline by uncached AIX revision `9cacddc2`; dependency since fetched, no fresh desktop compile acceptance.                                     |
-| Android/iOS compile, install, launch and device workflow      | Actual Android APK build failed in Candle/gemm-f16 requiring fullfp16. No native link, APK, launch, device workflow or iOS compile.                     |
+| Android/iOS compile, install, launch and device workflow      | ARM64 Rust compile/link passed. APK packaging fails at generated CLI callback. No APK, launch, device workflow or iOS compile.                          |
 | Independent Astra/high review                                 | Two independent read-only Astra reviews completed; key findings checked against source. Native acceptance remains unverified.                           |
 
 Use repository-local binaries for frontend checks when avoiding package-manager

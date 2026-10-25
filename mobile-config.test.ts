@@ -18,8 +18,11 @@ const androidConfig = existsSync(androidConfigPath)
     ? JSON.parse(readFileSync(androidConfigPath, "utf8"))
     : {};
 
-it("removes only the desktop AIX resource from the Android merge patch", () => {
-    expect(androidConfig.bundle?.resources).toEqual({ "../aixchess.duckdb_extension": null });
+it("removes unsupported native resources from the Android merge patch", () => {
+    expect(androidConfig.bundle?.resources).toEqual({
+        "../aixchess.duckdb_extension": null,
+        "resources/vision/": null,
+    });
     expect(androidConfig.build?.beforeBuildCommand).toContain("vite.js build");
     expect(androidConfig.build?.beforeBuildCommand).toContain("tsc --noEmit");
     expect(androidConfig.build?.beforeBuildCommand).not.toContain("prepare:aix");

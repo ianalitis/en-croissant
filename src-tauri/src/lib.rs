@@ -3,6 +3,10 @@ mod db;
 mod engine;
 mod error;
 mod game;
+#[cfg(not(target_os = "android"))]
+mod vision;
+#[cfg(target_os = "android")]
+#[path = "vision_android.rs"]
 mod vision;
 
 mod fs;
@@ -29,7 +33,9 @@ use oauth::AuthState;
 #[cfg(all(debug_assertions, desktop))]
 use specta_typescript::{BigIntExportBehavior, Typescript};
 use sysinfo::SystemExt;
-use tauri::{Emitter, Manager, Window};
+#[cfg(desktop)]
+use tauri::Emitter;
+use tauri::{Manager, Window};
 use tauri_plugin_log::{Target, TargetKind};
 
 use crate::chess::{
@@ -87,8 +93,10 @@ pub struct AppState {
 
 #[tauri::command]
 #[specta::specta]
-async fn close_splashscreen(window: Window) -> Result<(), String> {
-    window
+async fn close_splashscreen(_window: Window) -> Result<(), String> {
+    // Mobile activities do not use the hidden desktop window/splashscreen.
+    #[cfg(desktop)]
+    _window
         .get_webview_window("main")
         .expect("no window labeled 'main' found")
         .show()
